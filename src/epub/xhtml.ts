@@ -123,7 +123,7 @@ function handle(el: Element, chapterDir: string, out: Block[]): void {
     const image = el.querySelector("image");
     const href =
       image?.getAttribute("href") ?? image?.getAttribute("xlink:href") ?? "embedded image";
-    pushImage(href, image?.getAttribute("alt"), chapterDir, out);
+    pushImage(href, image?.getAttribute("alt") ?? null, chapterDir, out);
     return;
   }
 
@@ -135,7 +135,8 @@ function handle(el: Element, chapterDir: string, out: Block[]): void {
       svgImage?.getAttribute("href") ??
       svgImage?.getAttribute("xlink:href") ??
       "figure";
-    const alt = img?.getAttribute("alt") ?? el.querySelector("figcaption")?.textContent ?? null;
+    const alt =
+      img?.getAttribute("alt") ?? el.querySelector("figcaption")?.textContent ?? null;
     pushImage(src, alt, chapterDir, out);
     return;
   }
