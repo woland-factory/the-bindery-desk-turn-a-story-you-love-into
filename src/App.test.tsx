@@ -19,7 +19,7 @@ describe("App: first screen and accessibility", () => {
     expect(screen.getByRole("button", { name: "Choose EPUB file" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Open the sample book" })).toBeVisible();
     expect(screen.getByRole("main")).toBeInTheDocument();
-    expect(fileInput()).toHaveAttribute("aria-label", "Choose EPUB file");
+    expect(fileInput()).toHaveAttribute("aria-label", "Upload EPUB file");
   });
 });
 

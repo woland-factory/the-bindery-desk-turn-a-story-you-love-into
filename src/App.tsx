@@ -75,7 +75,7 @@ export default function App() {
         type="file"
         accept=".epub,application/epub+zip"
         className="visually-hidden"
-        aria-label="Choose EPUB file"
+        aria-label="Upload EPUB file"
         tabIndex={-1}
         onChange={onInputChange}
       />
