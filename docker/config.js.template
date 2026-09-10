@@ -1,0 +1,5 @@
+window.__BINDERY_CONFIG__ = {
+  sentryDsn: "${SENTRY_DSN}",
+  umamiUrl: "${UMAMI_URL}",
+  umamiWebsiteId: "${UMAMI_WEBSITE_ID}",
+};

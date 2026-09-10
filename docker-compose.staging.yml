@@ -1,0 +1,32 @@
+name: the-bindery-desk-turn-a-story-you-love-into-staging
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: the-bindery-desk-turn-a-story-you-love-into-staging-web
+    expose:
+      - "80"
+    environment:
+      # Integrations stay off unless the factory injects these at deploy time.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      UMAMI_URL: ${UMAMI_URL:-}
+      UMAMI_WEBSITE_ID: ${UMAMI_WEBSITE_ID:-}
+      # The differentiator (a real book parsed to structure) is reachable in
+      # one tap via the always-bundled sample, so this flag needs no seed step.
+      SEED_DEMO: "1"
+    networks:
+      - default
+      - staging
+    mem_limit: 512m
+    oom_score_adj: 800
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+networks:
+  staging:
+    external: true
+    name: factory-staging-net
