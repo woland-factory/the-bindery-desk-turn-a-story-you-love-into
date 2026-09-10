@@ -10,10 +10,7 @@ import type { RuntimeConfig } from "../config/runtimeConfig";
  * is page-load tracking only; the app never calls umami.track with
  * file-derived data.
  */
-export function initUmami(
-  cfg: RuntimeConfig,
-  doc: globalThis.Document = document,
-): boolean {
+export function initUmami(cfg: RuntimeConfig, doc: globalThis.Document = document): boolean {
   if (!cfg.umamiUrl || !cfg.umamiWebsiteId) return false;
 
   const script = doc.createElement("script");

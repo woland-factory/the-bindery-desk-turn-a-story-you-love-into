@@ -41,8 +41,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family:
-    "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
   font-size: 17px;
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
@@ -130,7 +129,9 @@ body {
   border-radius: var(--radius);
   padding: 2.25rem 1.4rem;
   text-align: center;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 
 .dropzone--active {
@@ -150,7 +151,10 @@ body {
   border-radius: 9px;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease;
+  transition:
+    transform 0.05s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .btn:active {
@@ -190,7 +194,12 @@ body {
 .skeleton__line {
   height: 1rem;
   border-radius: 6px;
-  background: linear-gradient(90deg, var(--line), color-mix(in srgb, var(--line) 55%, var(--surface)), var(--line));
+  background: linear-gradient(
+    90deg,
+    var(--line),
+    color-mix(in srgb, var(--line) 55%, var(--surface)),
+    var(--line)
+  );
   background-size: 200% 100%;
   animation: shimmer 1.3s ease-in-out infinite;
   margin-bottom: 0.7rem;

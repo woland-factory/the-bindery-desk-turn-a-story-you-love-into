@@ -24,8 +24,7 @@ export function buildChapters(files: FileMap, opf: OpfData, toc: TocEntry[]): Ch
   opf.spine.forEach((entry, index) => {
     const item = entry.item;
     const blocks = readChapterBlocks(files, item);
-    const title =
-      titleByPath.get(item.href) ?? firstHeading(blocks) ?? `Chapter ${index + 1}`;
+    const title = titleByPath.get(item.href) ?? firstHeading(blocks) ?? `Chapter ${index + 1}`;
     chapters.push({ id: entry.idref || item.href, title, order: index, blocks });
   });
 

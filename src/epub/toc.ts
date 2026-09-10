@@ -38,8 +38,7 @@ function parseNav(files: FileMap, navPath: string): TocEntry[] {
   // Prefer the nav whose epub:type is "toc"; else the first nav element.
   const navs = byLocalName(doc, "nav");
   const tocNav =
-    navs.find((n) => (n.getAttribute("epub:type") ?? n.getAttribute("type")) === "toc") ??
-    navs[0];
+    navs.find((n) => (n.getAttribute("epub:type") ?? n.getAttribute("type")) === "toc") ?? navs[0];
   if (!tocNav) return [];
 
   const ol = byLocalName(tocNav, "ol")[0];

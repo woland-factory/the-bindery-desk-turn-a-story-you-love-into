@@ -17,9 +17,30 @@ import { resolveHref } from "./paths";
 // Elements that introduce their own block; a container holding any of these
 // is recursed into rather than flattened to a single paragraph.
 const BLOCK_TAGS = new Set([
-  "p", "div", "section", "article", "aside", "blockquote", "ul", "ol", "li",
-  "h1", "h2", "h3", "h4", "h5", "h6", "figure", "header", "footer", "main",
-  "table", "pre", "nav", "hgroup", "details",
+  "p",
+  "div",
+  "section",
+  "article",
+  "aside",
+  "blockquote",
+  "ul",
+  "ol",
+  "li",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "figure",
+  "header",
+  "footer",
+  "main",
+  "table",
+  "pre",
+  "nav",
+  "hgroup",
+  "details",
 ]);
 
 // Tags whose text we emit directly as one paragraph (no further recursion).
@@ -42,7 +63,11 @@ export function boilerplateLabel(
   const base = item.href.split("/").pop()?.toLowerCase() ?? "";
 
   // 1. Manifest/name role: cover, title page, toc, colophon, copyright.
-  if (/(^|[-_])(cover|titlepage|title[-_]?page|colophon|copyright|imprint|toc|nav)([-_.]|$)/.test(base)) {
+  if (
+    /(^|[-_])(cover|titlepage|title[-_]?page|colophon|copyright|imprint|toc|nav)([-_.]|$)/.test(
+      base,
+    )
+  ) {
     return labelFromName(base);
   }
 
@@ -71,9 +96,16 @@ export function boilerplateLabel(
 
   // 4. AO3 work-metadata page: several of these labels appear together.
   const ao3Markers = [
-    /\bArchive Warning/i, /\bRating:/i, /\bCategory:/i, /\bFandom:/i,
-    /\bRelationship:/i, /\bSummary:/i, /\bPublished:/i, /\bUpdated:/i,
-    /\bChapters:\s*\d+\/?/i, /\bStats:/i,
+    /\bArchive Warning/i,
+    /\bRating:/i,
+    /\bCategory:/i,
+    /\bFandom:/i,
+    /\bRelationship:/i,
+    /\bSummary:/i,
+    /\bPublished:/i,
+    /\bUpdated:/i,
+    /\bChapters:\s*\d+\/?/i,
+    /\bStats:/i,
   ].filter((re) => re.test(bodyText)).length;
   if (ao3Markers >= 3) return "work metadata";
 
@@ -135,8 +167,7 @@ function handle(el: Element, chapterDir: string, out: Block[]): void {
       svgImage?.getAttribute("href") ??
       svgImage?.getAttribute("xlink:href") ??
       "figure";
-    const alt =
-      img?.getAttribute("alt") ?? el.querySelector("figcaption")?.textContent ?? null;
+    const alt = img?.getAttribute("alt") ?? el.querySelector("figcaption")?.textContent ?? null;
     pushImage(src, alt, chapterDir, out);
     return;
   }
@@ -164,12 +195,7 @@ function handle(el: Element, chapterDir: string, out: Block[]): void {
   if (text) out.push({ type: "paragraph", keptOrDropped: "kept", text });
 }
 
-function pushImage(
-  src: string | null,
-  alt: string | null,
-  chapterDir: string,
-  out: Block[],
-): void {
+function pushImage(src: string | null, alt: string | null, chapterDir: string, out: Block[]): void {
   const resolved = src ? resolveHref(chapterDir, src) : undefined;
   out.push({
     type: "image",

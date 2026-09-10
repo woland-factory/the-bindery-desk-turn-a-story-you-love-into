@@ -13,7 +13,8 @@ const enc = new TextEncoder();
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "public", "sample");
 
-const page = (title, body) => enc.encode(`<?xml version="1.0" encoding="utf-8"?>
+const page = (title, body) =>
+  enc.encode(`<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
 <head><title>${title}</title></head>
 <body>${body}</body>

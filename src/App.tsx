@@ -75,14 +75,18 @@ export default function App() {
         type="file"
         accept=".epub,application/epub+zip"
         className="visually-hidden"
-        aria-hidden="true"
+        aria-label="Choose EPUB file"
         tabIndex={-1}
         onChange={onInputChange}
       />
 
       <main className="app__main" id="main">
         {state.status === "empty" && (
-          <ImportSurface onFile={onFile} onChooseFile={openFileDialog} onOpenSample={onOpenSample} />
+          <ImportSurface
+            onFile={onFile}
+            onChooseFile={openFileDialog}
+            onOpenSample={onOpenSample}
+          />
         )}
         {state.status === "loading" && <LoadingState name={state.name} />}
         {state.status === "ready" && (

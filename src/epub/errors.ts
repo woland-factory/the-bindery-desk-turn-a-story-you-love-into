@@ -1,11 +1,7 @@
 // Typed, user-safe parse failures. Only whole-archive structural problems
 // throw; a single bad chapter never does (it degrades to empty blocks).
 
-export type ParseErrorCode =
-  | "too-large"
-  | "not-a-zip"
-  | "no-opf"
-  | "empty-spine";
+export type ParseErrorCode = "too-large" | "not-a-zip" | "no-opf" | "empty-spine";
 
 const MESSAGES: Record<ParseErrorCode, string> = {
   "too-large": "This file is larger than the limit.",

@@ -1,7 +1,4 @@
-export type AppError =
-  | { kind: "unreadable" }
-  | { kind: "too-large" }
-  | { kind: "sample-failed" };
+export type AppError = { kind: "unreadable" } | { kind: "too-large" } | { kind: "sample-failed" };
 
 interface Props {
   error: AppError;
