@@ -1,0 +1,22 @@
+node_modules
+dist
+coverage
+*.local
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+.vscode
+.idea
+
+# Test output
+playwright-report
+test-results
+
+# Run context (factory)
+result.json
+compose.critique.yml
+CLAUDE.md
+.claude
