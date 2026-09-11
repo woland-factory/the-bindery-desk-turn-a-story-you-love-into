@@ -1,10 +1,14 @@
-# EPIC SPEC — App shell, EPUB ingest, and staging deploy
+# EPIC SPEC — Pagination engine (the risk concentrate)
 
-> EPIC 1 of The Bindery Desk. Depth-first build order: get a real book's
-> structure into memory and prove the privacy property before any
-> typography lands. This EPIC ships the scaffold, the fully client-side
-> EPUB parser, a bundled sample, and the staging deploy plumbing. No
-> preview typography, no dials, no engine, no server.
+> EPIC 2 of The Bindery Desk. This is the depth-first investment the whole
+> product is built around: measurement-based pagination of a whole book,
+> computed in a Web Worker, off the main thread, with progressive feedback.
+> It consumes the parsed `Document` model from EPIC 1 (read-only) and
+> produces a page-by-page layout plus an exact page count. It ships a
+> deliberately minimal, throwaway preview only to prove the engine works
+> end to end. Polished facing-page rendering is EPIC 3, dials are EPIC 4,
+> the budget solver is EPIC 5, and imposition/export is EPIC 6. None of
+> those are in this EPIC.
 
 ---
 
@@ -13,546 +17,652 @@
 **Live responsiveness of the whole-book re-flow.** Any control, above all
 the paper-budget slider, must re-flow the entire book with perceptible
 feedback under 100ms and settle within about two seconds on a 300k-word
-novel.
+novel. Not more dials than InDesign. Faster, live feedback than anything
+free (Word, Calibre, Reedsy).
 
-**What it demands of THIS EPIC:** this EPIC builds no re-flow, but it
-builds the thing the re-flow runs on. The parsed `Document` model must be
-a clean, normalized, in-memory structure the pagination engine (EPIC 2)
-can walk repeatedly without ever re-parsing the EPUB or touching the ZIP
-again. That means: parse once, keep flat arrays of typed text blocks, no
-live DOM references retained, no lazy re-reads of the archive. Parsing a
-large EPUB must not block the main thread long enough to feel broken
-(show a loading state; keep the heavy work interruptible and off the
-critical render path). A model that forces the engine to re-read files or
-re-parse XHTML on every re-flow would make the differentiator
-unreachable later. Build the model so EPIC 2 can be instant.
+**What it demands of THIS EPIC:** this EPIC *is* the responsiveness
+engine. Every later re-flow (dials in EPIC 4, the slider in EPIC 5) calls
+straight into what is built here, so the differentiator lives or dies on
+this code. The two budgets below are not "nice to have" performance
+targets, they are the acceptance criteria and the kill condition:
+
+- First feedback (an estimated page count and the first real pages) within
+  **100ms** of a pagination request.
+- A settled, exact full-book result within **about 2 seconds** on a
+  300k-word book.
+
+The architecture is chosen to make later re-flows instant: the worker
+holds the parsed `Document` in memory and re-paginates from a changed
+`DesignSpec` alone, so a slider drag never re-transfers or re-parses the
+book. If the engine cannot hit the budgets on the named 300k-word file,
+this EPIC fails. It is never degraded around (downsampling, faking a page
+count, skipping content). See §8 kill condition.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **Static SPA scaffold.** Vite + React + TypeScript. ESLint + Prettier.
-   Vitest + React Testing Library. `npm run dev`, `build`, `lint`,
-   `typecheck`, `test` all work. No backend, no routes, no accounts.
-2. **Client-side EPUB import.** Drag-and-drop onto the page and a file
-   picker. Files are read in-browser only. No upload, no server.
-3. **EPUB → `Document` model.** Unzip in-browser, resolve the OPF,
-   read spine + manifest + TOC, extract ordered chapters with titles,
-   and normalize each chapter body into typed text blocks per the drop
-   policy in §4.
-4. **Graceful format handling.** AO3-style exports (EPUB2/NCX,
-   metadata/notes front matter) and Standard Ebooks / Gutenberg exports
-   (EPUB3/nav, boilerplate) both parse into ordered, correctly-titled
-   chapters. A malformed EPUB produces a designed error state, never a
-   crash or blank screen.
-5. **Import report.** The parser records what it kept and dropped
-   (images, notes, boilerplate) and the UI can show it.
-6. **Structural view.** Once a book loads, show its parsed structure:
-   title, author, chapter list with titles, per-chapter block counts,
-   and the import report. This is honest raw structure, not a typeset
-   preview.
-7. **Bundled public-domain sample.** A committed, redistributable
-   public-domain EPUB that loads and renders as parsed structure with
-   zero user input, in one tap.
-8. **Designed empty, loading, and error states** on the import surface.
-9. **Staging deploy scaffold.** `Dockerfile` (build static assets, serve
-   them) and `docker-compose.staging.yml`. `SENTRY_DSN`,
-   `UMAMI_WEBSITE_ID`, `UMAMI_URL` wired via **runtime** env (not baked
-   at build). `.env.example` with placeholders only.
-10. **README skeleton for strangers** (understand / run / contribute).
+1. **A pure, deterministic pagination core** that turns a `Document` plus a
+   `DesignSpec` into a `PaginationResult` (pages, per-page line geometry,
+   exact page count). Text measurement is injected through a `Measurer`
+   interface so the core is testable without a browser.
+2. **Measurement-based line breaking.** Greedy (first-fit) line breaking
+   using real text-advance widths, with Knuth-Liang hyphenation to break a
+   word that overflows the column.
+3. **Widow and orphan control** at page boundaries and at chapter
+   boundaries, toggleable, and guaranteed to terminate.
+4. **Chapter-opening and blank-page rules** that change the page count:
+   each chapter starts a new page, and (when the design asks for it) a
+   chapter opens on a recto, inserting a blank verso where needed.
+5. **A Web Worker** that runs the whole pass off the main thread, with a
+   streaming protocol: an early first-feedback message, incremental
+   progress, and a final settled result. Requests are cancelable
+   (latest-wins) so a rapid series of re-flows does not queue up.
+6. **A main-thread client** that owns the worker, sends `load` once per
+   book and `paginate` per design, and surfaces streamed results and
+   timings.
+7. **A minimal, explicitly throwaway preview surface** that renders the
+   engine output (page count, timing readout, the first few pages as plain
+   laid-out lines) purely to validate the engine end to end. It has a
+   loading and an error state and works at 390px, and it is replaced whole
+   by EPIC 3.
+8. **Named large test files:** a real ~150k-word EPUB and a real
+   ~300k-word EPUB committed with provenance, plus the perf harness that
+   measures and records the budgets against them.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **Any preview typography or dials** (facing pages, margins, fonts,
-  headers, folios, trim size, paper-budget slider). EPIC 3/4/5.
-- **The pagination engine / Web Worker measurement.** EPIC 2.
-- **Any server-side processing, upload, account, or persistence.**
-  Project files and house-style presets are EPIC 7. This EPIC keeps the
-  `Document` in memory only.
-- **Non-EPUB inputs** (PDF, DOCX, MOBI).
-- **Export / PDF generation.** EPIC 6.
-- **Guided first-run walkthrough from drop to export.** EPIC 7. (The
-  empty state here still meets QUALITY BAR §4 for the surface that
-  exists: see §7.)
+- **Polished or virtualized preview UI:** facing pages, mirrored-margin
+  visuals, running-header rendering, folio rendering, header/folio
+  suppression styling, smooth-scroll virtualization. EPIC 3. The throwaway
+  preview in this EPIC is a validation surface, not the real preview.
+- **User-facing dials / controls.** No trim/font/margin/spacing UI, no
+  toggles surfaced to the user. EPIC 2 consumes a single fixed default
+  `DesignSpec` (§2.7). Building any control panel is EPIC 4.
+- **The budget solver ("Fit into N sheets").** EPIC 5. Do not build a
+  solver, a slider, or any search over the design space here.
+- **Imposition / signatures.** No fold-to-signature math, and the
+  `signatures` field from the plan's `PaginationResult` sketch is
+  intentionally omitted from this EPIC's output (§2.4). EPIC 6.
+- **PDF or any export.** EPIC 6.
+- **Flowing images into pages.** Images are already dropped from flow in
+  the EPIC 1 model; the engine lays out `heading`, `paragraph`, and `note`
+  blocks only.
+- **Any change to the parsed `Document` shape** (`src/model/document.ts`).
+  The engine reads it; it does not modify it.
+- **Persistence, project files, house-style presets.** EPIC 7.
 - **Any runtime LLM.** The product has no text-generation feature.
-- **Rendering inline images or covers into the book.** Images are
-  recorded, not displayed in the structure view.
 
 ---
 
 ## 2. Technical design
 
-### 2.1 Stack and dependencies
-- **Build/dev:** Vite, React 18, TypeScript (strict).
-- **Test:** Vitest + @testing-library/react + jsdom.
-- **Lint/format:** ESLint (typescript-eslint) + Prettier.
-- **Unzip:** `fflate` (small, fast, synchronous unzip of in-memory
-  bytes). Do not add a full EPUB library; we parse the OPF/TOC ourselves
-  with the platform `DOMParser`.
-- **XML/XHTML parsing:** native `DOMParser` (`application/xml` for
-  OPF/NCX, `application/xhtml+xml` with a `text/html` fallback for
-  chapter bodies). No XML dependency.
-- **Error tracking:** `@sentry/react`, initialized only when a DSN is
-  present at runtime.
-- **Analytics:** Umami loaded as a script when its runtime config is
-  present. No SDK dependency.
+### 2.1 Stack additions
+- **Web Worker (ES module).** Vite's native worker support:
+  `new Worker(new URL('./pagination.worker.ts', import.meta.url), { type: 'module' })`.
+  No worker plugin or extra config beyond this.
+- **Text measurement:** `OffscreenCanvas.getContext('2d').measureText`
+  inside the worker. The `Range`/DOM measurement path named in the planner
+  scope needs a live DOM and layout, which a worker does not have, so
+  OffscreenCanvas is the in-worker choice. A documented fallback
+  (§2.5) keeps the app working where `OffscreenCanvas` is absent.
+- **Hyphenation:** `hyphen` / Knuth-Liang patterns via the `hypher`
+  package with the `hyphenation.en-us` pattern set (both MIT, pure JS,
+  deterministic, worker-safe). Language is selected from
+  `Document.language`, falling back to en-us. This is the only new runtime
+  dependency; do not add a typesetting or layout library.
+- **tsconfig:** add `"WebWorker"` to `lib` in `tsconfig.app.json` (it
+  currently lists `ES2021`, `DOM`, `DOM.Iterable` only) so worker globals
+  and `OffscreenCanvas` type-check. Keep `strict` and the existing
+  `verbatimModuleSyntax` rule (use `import type` for type-only imports).
 
-Keep the dependency list this short. Adding speculative libraries is
+Keep the dependency list this short. Adding a layout/typesetting framework,
+a font-parsing library (that is EPIC 6's concern), or a state library is
 drift.
 
-### 2.2 File / module layout
+### 2.2 File / module layout (new files; nothing in `src/epub` or `src/model` changes)
 ```
-index.html
-package.json  tsconfig.json  vite.config.ts  vitest.config.ts
-.eslintrc.cjs  .prettierrc  .env.example
-src/
-  main.tsx                     app entry
-  App.tsx                      state machine: empty | loading | ready | error
-  config/runtimeConfig.ts      reads window.__BINDERY_CONFIG__ (see 2.6)
-  integrations/sentry.ts       init(dsn?) with PII scrubbing; no-op if absent
-  integrations/umami.ts        inject(url?, websiteId?); no-op if absent
-  model/
-    document.ts                Document, Chapter, Block, BlockType types
-    importReport.ts            ImportReport types + aggregation helpers
-  epub/
-    parseEpub.ts               orchestrator: bytes -> { document, report }
-    unzip.ts                   fflate wrapper -> Map<path, Uint8Array>
-    container.ts               META-INF/container.xml -> OPF path
-    opf.ts                     OPF -> { metadata, manifest, spine }
-    toc.ts                     nav.xhtml (EPUB3) or NCX (EPUB2) -> TocEntry[]
-    chapters.ts               merge spine + TOC -> ordered chapters
-    xhtml.ts                   chapter XHTML -> Block[] + drop records (see 4)
-    errors.ts                  ParseError (typed, user-safe messages)
-  ui/
-    ImportSurface.tsx          dropzone + picker; owns drag/drop + file read
-    EmptyState.tsx
-    LoadingState.tsx           layout-stable skeleton
-    ErrorState.tsx             product-voice message + recovery actions
-    StructureView.tsx          parsed structure + import report
-  sample/loadSample.ts         fetch bundled sample asset -> bytes -> parse
-public/
-  sample/<public-domain-book>.epub
-  config.js                    dev placeholder (empty config); prod generated
-docker/
-  entrypoint.sh                envsubst -> /usr/share/nginx/html/config.js
-  config.js.template
-  nginx.conf
-Dockerfile
-docker-compose.staging.yml
-test/fixtures/                 synthetic EPUBs (see 6.1)
-README.md
+src/engine/
+  types.ts              DesignSpec, TextStyle, PaginationResult, Page, Line, Timings
+  defaultDesign.ts      the single fixed default DesignSpec for this EPIC (§2.7)
+  units.ts              px basis constants + pt/in -> px helpers (deterministic)
+  measurer.ts           Measurer interface + SyntheticMeasurer (deterministic, for tests)
+  offscreenMeasurer.ts  OffscreenCanvas-backed Measurer (worker/browser only)
+  hyphenate.ts          hypher wrapper, language-selected, pure + memoized
+  lineBreak.ts          greedy line breaking + hyphenation over one paragraph (pure)
+  paginate.ts           lines -> pages: chapter-open, recto/blank, widow/orphan, count (pure)
+  engine.ts             streaming orchestration: (Document, DesignSpec, Measurer) -> events
+  protocol.ts           worker message types: load | paginate | progress | done | error
+  pagination.worker.ts  worker entry: holds Document, uses offscreenMeasurer, runs engine
+  client.ts             main-thread client: owns Worker, load()/paginate(), streams events
+  *.test.ts             unit tests (SyntheticMeasurer; jsdom-safe)
+src/ui/
+  EnginePreview.tsx      throwaway validation preview (bounded, loading + error, 390px)
+  EnginePreview.test.tsx
+test/fixtures/large/
+  <~150k-word>.epub      real public-domain EPUB (§2.9)
+  <~300k-word>.epub      real public-domain EPUB (§2.9)
+  PROVENANCE.md          source URLs, license, measured word counts
+e2e/pagination.spec.ts   Playwright: budgets, determinism, main-thread responsiveness
 ```
 
-### 2.3 Data model (in-memory TypeScript; no persistence, no migrations)
-This EPIC introduces no database and no on-disk format, so there are no
-migrations. The model is the in-memory contract EPIC 2+ consume. Match
-the plan's data-model sketch.
+### 2.3 Inputs the engine consumes
+- `Document` (read-only, from `src/model/document.ts`). The engine walks
+  `chapters[].blocks[]`, laying out only blocks with
+  `keptOrDropped === 'kept'` and `type` in `heading | paragraph | note`.
+  Dropped blocks and `image` blocks are skipped (they carry no flowable
+  text). Inline formatting is already flattened to `Block.text` by EPIC 1,
+  so a block is a single plain string.
+- `DesignSpec` (§2.7). All page geometry, font, spacing, margins, and the
+  two toggles (`widowControl`, `hyphenation`) come from here.
+
+### 2.4 Output: `PaginationResult`
+Matches the plan's data-model sketch, minus `signatures` (imposition is
+EPIC 6 and is a Non-Goal here). Keep it fully serializable (plain
+objects/arrays/strings/numbers) so it clones cheaply across `postMessage`.
 
 ```ts
-// model/document.ts
-export type BlockType = 'heading' | 'paragraph' | 'image' | 'note';
-export type KeptOrDropped = 'kept' | 'dropped';
-
-export interface Block {
-  type: BlockType;
-  keptOrDropped: KeptOrDropped;
-  level?: number;      // heading level 1..6
-  text?: string;       // normalized plain text (heading, paragraph, note)
-  src?: string;        // image href resolved relative to the chapter doc
-  alt?: string;        // image alt text if present
-  dropReason?: string; // why a block was dropped (image | note | boilerplate)
+// src/engine/types.ts
+export interface Line {
+  text: string;        // the exact substring laid out on this line
+  x: number;           // left offset within the text column, in px (0 at column start)
+  y: number;           // baseline offset from the top of the text area, in px
+  width: number;       // measured advance width of `text`, in px
+  hyphenated: boolean; // true if this line ends in a soft hyphen inserted by the engine
 }
 
-export interface Chapter {
-  id: string;          // stable within the document (spine idref or path)
-  title: string;       // from TOC, else first heading, else fallback
-  order: number;       // 0-based reading order
-  blocks: Block[];     // flat, in reading order; kept + recorded-dropped
+export type PageKind = 'body' | 'opener' | 'blank';
+export type PageSide = 'recto' | 'verso';
+
+export interface Page {
+  index: number;         // 0-based sequential page number
+  side: PageSide;        // recto = odd 1-based folio, verso = even
+  kind: PageKind;        // opener = a chapter starts here; blank = inserted spacer
+  chapterIndex: number;  // Chapter.order this page belongs to (-1 for a blank spacer)
+  lines: Line[];         // empty for a blank page; opener pages may reserve top space
 }
 
-export interface Document {
-  title: string;
-  author: string;      // joined creators; empty string if none
-  language: string;    // BCP-47 from OPF metadata; '' if absent
-  chapters: Chapter[]; // ordered by spine
-  source: { name: string; byteLength: number }; // no bytes retained
+export interface Timings {
+  wordCount: number;
+  pageCount: number;
+  firstFeedbackMs: number; // request dispatch -> first `progress` message on main
+  settleMs: number;        // request dispatch -> `done` message on main
+}
+
+export interface PaginationResult {
+  pageCount: number;
+  pages: Page[];
+  // `signatures` is intentionally omitted: imposition is EPIC 6.
 }
 ```
 
-`Document` must not retain the raw ZIP, the unzipped file map, or any DOM
-nodes after parsing. `parseEpub` returns a fully-materialized value and
-lets everything else be garbage-collected.
+Geometry convention: `x`/`y`/`width` are relative to the **text area** of a
+page (the rectangle inside the margins), in CSS px. The engine does **not**
+mirror margins or place the text area on the physical page. That mapping
+(inner vs outer margin, gutter side per recto/verso) is a pure rendering
+concern and belongs to EPIC 3. The engine only needs the **column width**,
+which is constant across pages for a given design (see §2.6), so mirroring
+does not affect pagination or page count.
+
+### 2.5 Measurement (the `Measurer` seam)
+Line breaking depends on real advance widths, but jsdom has no text metrics
+and no `OffscreenCanvas`, and we must be able to unit-test the algorithm
+deterministically. So measurement is an injected interface.
 
 ```ts
-// model/importReport.ts
-export interface DropRecord {
-  chapterOrder: number;
-  chapterTitle: string;
-  kind: 'image' | 'note' | 'boilerplate';
-  reason: string;
-  detail?: string;     // e.g. image src, note heading; never full body text
+// src/engine/measurer.ts
+export interface TextStyle {
+  family: string;   // CSS font-family list from the DesignSpec
+  sizePx: number;   // font size in CSS px (derived from sizePt, see units.ts)
+  // weight/style are fixed for body text in this EPIC; headings may use a
+  // bold flag. Keep the surface this small.
+  bold?: boolean;
 }
-export interface ImportReport {
-  keptCounts: { headings: number; paragraphs: number; notes: number };
-  droppedCounts: { images: number; notes: number; boilerplate: number };
-  records: DropRecord[]; // capped list for display; counts are authoritative
+
+export interface Measurer {
+  /** Advance width of `text` at `style`, in CSS px. Must be a pure function
+   *  of (text, style) for the lifetime of the measurer. */
+  measure(text: string, style: TextStyle): number;
 }
 ```
 
-### 2.4 EPUB parse pipeline (`parseEpub(bytes, sourceName)`)
-1. **Unzip** bytes with fflate into `Map<path, Uint8Array>`. A ZIP that
-   fails to inflate throws `ParseError('not-a-zip')`.
-2. **Container** — read `META-INF/container.xml`, resolve the first
-   `rootfile` `full-path` to the OPF. Missing/invalid throws
-   `ParseError('no-opf')`.
-3. **OPF** — parse metadata (`dc:title`, `dc:creator`(s), `dc:language`),
-   the `manifest` (id → href, media-type, `properties`), and the ordered
-   `spine` (`itemref` → manifest id, honoring `linear="no"` by still
-   including it after linear items but flagged, and skipping the nav doc
-   itself from reading order). Missing spine throws
-   `ParseError('empty-spine')`.
-4. **TOC** — EPUB3: the manifest item with `properties="nav"`; parse its
-   `nav[epub:type="toc"] ol` into ordered `{ title, href }`. EPUB2:
-   the spine `toc` NCX; parse `navMap/navPoint` (respect `playOrder`)
-   into `{ title, href }`. Absent/unparseable TOC is not fatal: fall
-   back to spine order with derived titles.
-5. **Chapters** (`chapters.ts`) — iterate spine documents in order. For
-   each, resolve its title: TOC entry whose href points into this
-   document (prefer the first), else the document's first `h1..h6`
-   text, else `Chapter {n}` where n is 1-based reading order. Parse the
-   body with `xhtml.ts` into blocks. Assign `order`.
-6. **Assemble** `Document` + aggregate `ImportReport`. Never throw for a
-   single bad chapter: a chapter that fails to parse yields an empty
-   `blocks` array plus a `boilerplate`/parse `DropRecord`, and parsing
-   continues. Only whole-archive structural failures (steps 1–3) throw.
+- **`OffscreenCanvasMeasurer` (production, worker):** wraps one
+  `OffscreenCanvas(0,0).getContext('2d')`. Sets `ctx.font` from the
+  `TextStyle` and returns `ctx.measureText(text).width`. It **memoizes**
+  by `(style-key, text)` because a novel repeats most of its words; the
+  cache is what keeps the 300k-word pass inside budget. Before the first
+  measure the worker awaits `self.fonts.ready` (when `self.fonts` exists)
+  so `measureText` uses the intended family rather than a mid-load
+  fallback. Determinism holds because, within one environment, a given
+  font string yields identical metrics on every run.
+- **`SyntheticMeasurer` (tests):** a deterministic measurer with no
+  platform dependency. Width is computed from a fixed per-character advance
+  table (a default advance for unlisted characters), so tests can construct
+  exact line-fill scenarios and assert precise break points, page counts,
+  and widow/orphan behavior. This runs in jsdom.
+- **Fallback:** if `OffscreenCanvas` is unavailable in the worker, fall
+  back to an approximate average-advance measurer (a per-character width
+  table for the default family) so the app still paginates and never
+  crashes. This path is less accurate and must be logged once; the primary,
+  budget-bearing path is `OffscreenCanvasMeasurer` (the Playwright target,
+  Chromium, has `OffscreenCanvas`).
 
-Enforce an input size cap before unzip (default 64 MB, a named constant).
-Over-cap throws `ParseError('too-large')`. This is the boundary
-validation required by QUALITY BAR §5 for a no-server app.
+`units.ts` fixes the px basis so every derivation is deterministic
+arithmetic: **96 px per inch, `96/72` px per point.** `sizePx = sizePt * 96/72`.
+Line advance (leading) `lineHeightPx = lineHeightPt * 96/72`. Column and
+text-area dimensions convert from the design's units the same way.
 
-### 2.5 Sentry + Umami (runtime env, PII-safe)
-- **`integrations/sentry.ts`:** `initSentry(cfg)`. If `cfg.sentryDsn` is
-  falsy, do nothing. When present, init `@sentry/react` with
-  `sendDefaultPii: false` and a `beforeSend` that strips anything
-  file-derived: never send the file name, book title, author, or chapter
-  text. Breadcrumbs must not capture file contents. This is the "no PII
-  in logs" clause and the privacy norm, enforced in code.
-- **`integrations/umami.ts`:** `initUmami(cfg)`. If either `umamiUrl` or
-  `umamiWebsiteId` is falsy, do nothing. When present, inject the Umami
-  script with `data-website-id`. Track page load only. Do **not** send
-  any event carrying file name, title, or content.
-- Both are called once from `main.tsx` using `runtimeConfig`.
+### 2.6 Line breaking, hyphenation, page assembly
+**Column width** (constant per design):
+`columnPx = (trim.w - margins.inner - margins.outer)` converted to px.
+**Text-area height:** `(trim.h - margins.top - margins.bottom)` in px.
+**Lines per page:** `floor(textAreaPx / lineHeightPx)` (integer; the same
+on every non-opener body page). An opener page reserves a fixed top drop
+(from `chapterOpening`) and therefore holds fewer lines; compute its
+capacity the same way from the reduced text area.
 
-### 2.6 Runtime configuration (no secrets baked at build)
-The SPA must read `SENTRY_DSN` / `UMAMI_URL` / `UMAMI_WEBSITE_ID` at
-**deploy time**, not build time, so one built image works across
-environments and no secret ever enters the bundle or git.
+**Greedy line breaking (`lineBreak.ts`, pure, measurer-injected):** for one
+paragraph, accumulate words separated by single spaces; when the next word
+would exceed `columnPx`, end the line before it. If a single word alone
+exceeds `columnPx`, or `hyphenation` is on and a hyphenated prefix would
+better fill the line, split the word at a Knuth-Liang hyphenation point
+(`hyphenate.ts`), append a soft hyphen to the prefix, and carry the
+remainder. A word with no valid hyphenation point that still overflows is
+placed on its own line (it may exceed the column; never drop text, never
+loop). Whitespace is normalized to single spaces (EPIC 1 already
+normalized runs). `heading` and `note` blocks break the same way; a
+heading may use `bold: true` and its own size from the design.
 
-- `index.html` loads `/config.js` **before** the app bundle.
-- `config.js` sets `window.__BINDERY_CONFIG__ = { sentryDsn, umamiUrl,
-  umamiWebsiteId }`. The committed `public/config.js` sets all empty
-  (local/dev = integrations off).
-- In the container, `docker/entrypoint.sh` renders
-  `docker/config.js.template` with `envsubst` from the environment into
-  the served `config.js` at startup, then starts nginx. Unset vars
-  render as empty strings, leaving that integration off.
-- `runtimeConfig.ts` reads `window.__BINDERY_CONFIG__` defensively
-  (missing object → all-empty config).
+**Page assembly (`paginate.ts`, pure):** walk chapters in `order`. For each
+chapter: start a new page (an `opener`), honoring the recto rule below;
+emit the chapter's heading block(s), then lay each paragraph's lines onto
+pages, filling to the per-page line capacity, opening a new `body` page
+when full. Assign each `Line` its `x` (0 for left-aligned), `y`
+(`lineIndexOnPage * lineHeightPx`, plus opener top drop), and `width`.
+`pageCount` is the number of pages emitted, including inserted blanks.
 
-### 2.7 Dockerfile / compose
-- **Dockerfile:** multi-stage. Stage 1 (node) runs `npm ci` and
-  `npm run build`. Stage 2 (nginx:alpine) copies `dist/` to
-  `/usr/share/nginx/html`, adds `docker/nginx.conf` (SPA fallback to
-  `index.html`, correct `application/epub+zip` type for the sample),
-  `config.js.template`, and `entrypoint.sh` as the entrypoint.
-- **docker-compose.staging.yml:** one service building this Dockerfile,
-  mapping a port, and passing `SENTRY_DSN`, `UMAMI_WEBSITE_ID`,
-  `UMAMI_URL` from the environment (compose `environment:` referencing
-  host env; no values committed). `env_file: .env` optional and
-  gitignored.
-- `nginx.conf` must serve the bundled sample EPUB and must not add any
-  upload or proxy path.
+**Chapter-opening and blank-page rules (affect page count, so they live
+here):**
+- Every chapter begins on a fresh page (`kind: 'opener'`).
+- When `chapterOpening.startRecto` is true, an opener must land on a recto
+  (odd 1-based folio). If the next page would be a verso, insert one
+  `kind: 'blank'` page first. `side` is derived from 0-based `index`
+  (`index` even -> recto folio 1,3,5...; i.e. `side = index % 2 === 0 ? 'recto' : 'verso'`;
+  fix the mapping once in code and keep it consistent).
+- Blank pages carry no lines and `chapterIndex = -1`.
 
----
+### 2.7 The fixed default `DesignSpec` (no UI in this EPIC)
+The engine needs geometry to run; EPIC 4 builds the controls that mutate
+it. This EPIC ships one hardcoded default and no way to edit it. Concrete
+values (half-letter trim, a common home-bind size), so the build is
+executable without a decision:
 
-## 3. Chapter detection details (correctness targets)
+```ts
+// src/engine/types.ts
+export interface DesignSpec {
+  trim: { w: number; h: number; unit: 'in' | 'mm' };
+  font: { family: string; sizePt: number; lineHeightPt: number; bold?: boolean };
+  margins: { inner: number; outer: number; top: number; bottom: number }; // trim units
+  chapterOpening: { topDropPt: number; startRecto: boolean };
+  runningHeader: { verso: string; recto: string; showOnOpener: boolean }; // stored, not rendered here
+  widowControl: boolean;
+  hyphenation: boolean;
+}
 
-- **Standard Ebooks / Gutenberg (EPUB3, nav):** titles come from
-  `nav.xhtml` toc. Standard Ebooks use semantic sections and clean
-  headings; Gutenberg varies. When a single spine document holds several
-  TOC targets (Gutenberg often puts several chapters in one file), still
-  produce one chapter per spine document in this EPIC and title it from
-  the first TOC entry pointing into it or its first heading. (Splitting a
-  file at internal anchors is not required for EPIC 1 and is not a
-  Non-Goal to add later; do the simple, correct thing now.)
-- **AO3 (EPUB2, NCX):** AO3 exports carry a title page and a
-  preface/"work" page (tags, summary, notes) before the story, and each
-  chapter as its own spine document, often titled by an `h2`/`h3`. NCX
-  navMap lists them. The preface/metadata page and AO3 tag/summary dump
-  are boilerplate (see §4). Chapter titles come from the navMap.
-- **Fallback order for a title:** TOC entry → first `h1..h6` in the
-  document → `Chapter {n}`.
-- **Ordering is always spine order.** The TOC supplies titles, never
-  reorders reading order.
+// src/engine/defaultDesign.ts
+export const DEFAULT_DESIGN: DesignSpec = {
+  trim: { w: 5.5, h: 8.5, unit: 'in' },
+  font: { family: 'Georgia, "Times New Roman", serif', sizePt: 11, lineHeightPt: 15 },
+  margins: { inner: 0.75, outer: 0.5, top: 0.6, bottom: 0.7 },
+  chapterOpening: { topDropPt: 72, startRecto: true },
+  runningHeader: { verso: '{author}', recto: '{title}', showOnOpener: false },
+  widowControl: true,
+  hyphenation: true,
+};
+```
 
----
+`runningHeader` is carried in the type (the model sketch names it) but is
+**not** rendered in this EPIC; EPIC 3 owns headers. The engine ignores it.
+The family is a common system serif with a generic fallback; EPIC 4/6 own
+the curated, embeddable font choices, so do not commit a font file or make
+any licensing decision here.
 
-## 4. Image and author-note policy (documented, testable)
+### 2.8 Widow/orphan control (`widowControl`)
+Definitions used: an **orphan** is the first line of a paragraph left alone
+at the foot of a page; a **widow** is the last line of a paragraph left
+alone at the top of the next page. With `widowControl: true`, keep at least
+**two** lines of a paragraph together at every page break:
+- **Orphan:** if only one line of a starting paragraph would fit at the
+  foot of the current page, move the whole paragraph to the next page
+  (leave the foot short).
+- **Widow:** if a break would leave exactly one line to carry to the next
+  page, pull one earlier line down so at least two lines carry over.
+- **Chapter boundary:** apply the same two-line minimum to the chapter's
+  opening paragraph so a lone opening line is never stranded at the foot of
+  an opener, and a chapter's final paragraph never leaves a lone widow.
 
-The parser keeps all story-relevant **text**, drops non-story clutter and
-images from the reading flow, and records everything droppable. Every
-block that is dropped is still represented in the model with
-`keptOrDropped: 'dropped'` and a `dropReason`, and counted in the report.
+Termination and determinism are mandatory: the adjustment must be bounded
+(a paragraph is moved forward at most once per page it is considered on;
+never re-enter a page it already left). If a paragraph is shorter than the
+two-line minimum, or the page can hold fewer than two lines, take the
+plain greedy break rather than looping. With `widowControl: false` the
+engine takes the plain greedy break everywhere. The toggle must produce an
+observably different page layout on the test files (proving it is wired),
+and both settings must be deterministic.
 
-| Content | Policy | In model | In report |
-|---|---|---|---|
-| Headings (`h1`–`h6`) | Keep | `heading` block, kept, `level` | keptCounts.headings |
-| Paragraphs (`p`, and text in `div` leaves) | Keep | `paragraph` block, kept | keptCounts.paragraphs |
-| Author / story notes (AO3 chapter notes, prefaces marked as notes, `aside`, endnotes) | **Keep**, typed as note so a later dial can toggle them | `note` block, kept | keptCounts.notes |
-| Inline images (`img`, `svg image`, figures) | **Drop from flow, record** | `image` block, dropped, `src`+`alt` retained | droppedCounts.images |
-| Boilerplate (Gutenberg license header/footer and transcriber notes; AO3 tag/summary/metadata page; nav/toc documents; colophon; cover page) | **Drop, record** | `note` block, dropped, `dropReason` | droppedCounts.boilerplate |
+### 2.9 Streaming protocol, worker, and client
+**Message protocol (`protocol.ts`):**
+- main -> worker `{ type: 'load', requestId, document }` — sent once per
+  book. The worker keeps the `Document` in memory for subsequent
+  `paginate` calls, so a re-flow never re-transfers the book. `document`
+  crosses by structured clone.
+- main -> worker `{ type: 'paginate', requestId, design }` — the hot path.
+  Runs against the held `Document`. Repeatable and cheap to send.
+- worker -> main `{ type: 'progress', requestId, estimatedPageCount, firstPages }`
+  — the **first-feedback** message, emitted within 100ms: a cheap page-count
+  estimate (from total character count over an estimated chars-per-page)
+  plus the first fully paginated pages (enough to fill the throwaway
+  preview). Further `progress` messages may refine `estimatedPageCount` and
+  extend `firstPages` as the pass proceeds.
+- worker -> main `{ type: 'done', requestId, result, timings }` — the
+  settled exact `PaginationResult` and `Timings`.
+- worker -> main `{ type: 'error', requestId, message }` — a product-voice,
+  file-free message on failure. Never post file text in an error.
 
-Rationale: v1 typesets story text into signatures, so images cannot flow
-and are recorded rather than shown; story notes are part of what fans
-bind, so they are kept but distinctly typed; pure metadata and license
-boilerplate is noise and is dropped with a record. Inline formatting
-(`em`, `strong`, `a`) is flattened to plain text in this EPIC (the model
-carries `text`, not rich runs). `dropReason`/`detail` must never contain
-full chapter body text (PII/privacy): use short labels like the image
-`src` or a note heading.
+**Cancellation (latest-wins):** each `paginate` carries a monotonically
+increasing `requestId`. The worker checks the current `requestId` between
+work slices and abandons a pass whose id is stale, so a burst of re-flows
+(EPIC 5's slider) collapses to the latest. The client ignores `progress`
+and `done` for superseded ids. The engine yields between slices (e.g.
+after each chapter, or every N pages) so cancellation is prompt and the
+first-feedback message can be posted before the full pass finishes.
 
-Boilerplate detection is heuristic and must be conservative (never drop a
-real story chapter): match Gutenberg license markers (e.g. "PROJECT
-GUTENBERG", license boundary phrases), AO3 metadata containers, and
-documents whose manifest/nav role is cover/toc/colophon. When unsure,
-**keep** and do not record. Document the exact heuristics in code
-comments so the reviewer can check them.
+**Client (`client.ts`):** owns one worker for the app's lifetime, exposes
+`load(document)` and `paginate(design)` returning a subscription of
+streamed events, stamps `firstFeedbackMs` and `settleMs` from the dispatch
+time of each `paginate` to the first `progress` / the `done`, and exposes
+the latest `Timings` for the preview and the perf test to read (e.g. a
+`window.__BINDERY_ENGINE_TIMINGS__` hook plus a DOM readout in the
+preview). Timing is measured from `paginate` dispatch, so it isolates the
+engine from EPIC 1 parse time.
 
----
+### 2.10 Determinism
+Identical `Document` + identical `DesignSpec` + identical `Measurer` must
+produce a byte-identical `PaginationResult`, including an identical
+`pageCount`, on every run. Requirements:
+- No `Math.random`, no `Date.now`, no wall-clock or environment input in
+  the core (timings are metadata attached at the edge, never fed back into
+  layout).
+- Deterministic iteration only (arrays and insertion-ordered maps; no
+  iteration over unordered structures).
+- Hyphenation (Knuth-Liang) is deterministic; the hyphenation cache must
+  not change results, only speed.
+- Greedy fit comparisons must not flip on float noise. Within one
+  environment `measureText` is stable across runs, which satisfies the
+  same-environment determinism AC directly. To reduce cross-environment
+  drift and keep golden tests stable, round measured advances to a fixed
+  precision before comparison (a single rounding helper in `units.ts`).
 
-## 5. Ordered task list (each maps to acceptance criteria)
+### 2.11 Named large test files (§2.2 `test/fixtures/large/`)
+The planner requires a **real** 150k-word and a **real** 300k-word EPUB
+("real" meaning genuine prose, not repeated filler that would game the
+measurement cache and misrepresent perf). No such files exist in the repo
+yet. Commit two real, redistributable, public-domain EPUBs from Standard
+Ebooks (clean EPUB3, US public domain):
+- **~150k-word class:** *Emma* by Jane Austen (about 160k words) is the
+  concrete default.
+- **~300k-word class:** *Middlemarch* by George Eliot (about 316k words) is
+  the concrete default. The ~2s settle budget binds on this file.
 
-### T1 — Scaffold and tooling
-Set up Vite + React + TS (strict), ESLint, Prettier, Vitest. Scripts:
-`dev`, `build`, `preview`, `lint`, `typecheck`, `test`.
-**AC:** `npm run lint`, `npm run typecheck`, `npm run test`, and
-`npm run build` all pass on a clean checkout. `npm run build` emits a
-static `dist/`.
-
-### T2 — Model + parser core
-Implement `model/*`, `epub/unzip.ts`, `container.ts`, `opf.ts`. Produce a
-`Document` skeleton (title/author/language/chapters-by-spine, empty
-blocks). Typed `ParseError`s for the whole-archive failure cases.
-**AC:** Given a valid fixture, returns a `Document` with correct
-title/author/language and spine-ordered chapters. Given a corrupt ZIP,
-missing OPF, or empty spine, throws the matching typed `ParseError`.
-
-### T3 — TOC + chapter titling
-Implement `toc.ts` (nav + NCX) and `chapters.ts` merge with the §3
-fallback order.
-**AC:** AO3-style (NCX) and Standard-Ebooks/Gutenberg-style (nav)
-fixtures each yield ordered chapters with the expected titles. A fixture
-with no usable TOC falls back to first-heading / `Chapter N` titles.
-
-### T4 — XHTML normalization + drop policy
-Implement `xhtml.ts` per §4: blocks, kept/dropped classification, image
-and boilerplate recording, whitespace normalization, formatting
-flattening. Aggregate the `ImportReport` in `parseEpub.ts`.
-**AC:** For the fixtures, kept/dropped counts and per-record `kind`
-match expected values. A chapter that fails to parse yields empty blocks
-plus a record and does not abort the whole parse. No `dropReason`/`detail`
-contains full body text.
-
-### T5 — Import surface + states
-Implement `ImportSurface` (drag-and-drop + file picker, reads the file to
-bytes in-browser, size-cap validation), and `EmptyState`,
-`LoadingState`, `ErrorState`. Wire the `App` state machine
-(empty → loading → ready | error). No network in this path.
-**AC:** Dropping or picking a valid EPUB shows a layout-stable loading
-state, then the structure view. A malformed EPUB shows the designed
-error state (product voice, recovery actions), never a crash or blank
-screen. Over-cap and non-EPUB files show the error state with a clear
-message. Fully usable at 390px, no horizontal scroll, ~44px targets,
-labeled inputs, visible focus, keyboard reaches every control.
-
-### T6 — Structure view + report
-Implement `StructureView`: title, author, chapter count, chapter list
-with titles and per-chapter kept-block counts, and a readable import
-report (kept/dropped totals, expandable record list).
-**AC:** After a successful parse the view shows correct title/author,
-the ordered chapter titles, and kept/dropped counts consistent with the
-parser output.
-
-### T7 — Bundled sample, one-tap load
-Commit a redistributable public-domain EPUB under `public/sample/`.
-Implement `sample/loadSample.ts` (fetch the bundled asset → bytes →
-`parseEpub`). Add a prominent one-tap "Open the sample book" action on
-the empty state. Credit the source + license in the README.
-**AC:** With no user file, one tap loads the sample and renders its
-parsed structure in well under a minute. The sample is genuinely public
-domain and redistributable.
-
-### T8 — Sentry + Umami + runtime config
-Implement `runtimeConfig.ts`, `integrations/sentry.ts`,
-`integrations/umami.ts`, `public/config.js` (empty), and call them from
-`main.tsx`. Both integrations no-op when their config is absent and are
-PII-safe when present.
-**AC:** With config absent, no Sentry/Umami network calls occur and the
-app works. With config present (unit-tested via injected
-`window.__BINDERY_CONFIG__`), init is invoked with the right values and
-`beforeSend` scrubs file-derived fields. No DSN/website id in any tracked
-file.
-
-### T9 — Staging deploy scaffold
-Write the multi-stage `Dockerfile`, `docker/entrypoint.sh` (envsubst →
-`config.js`), `docker/config.js.template`, `docker/nginx.conf`,
-`docker-compose.staging.yml`, and `.env.example` (placeholders only).
-**AC:** `docker compose -f docker-compose.staging.yml up` builds and
-serves the static app; opening it and tapping the sample renders the
-parsed structure within a minute with no user file. `config.js` is
-generated from env at container start; unset vars leave integrations off.
-
-### T10 — README skeleton + privacy verification notes
-Write the stranger-facing `README.md` (what it is in 2–3 plain
-sentences; exact clone/build/run commands verified against the compose
-file; how to run tests; where the code lives; sample credit/license). No
-factory/pipeline internals.
-**AC:** A stranger can understand, run (commands match the real compose
-file and scripts), and contribute. README documents the "your file never
-leaves the browser" property and how to verify it (devtools network tab
-+ offline).
+If a chosen title's measured word count differs, the implementer records
+the **actual** counts in `PROVENANCE.md` and in `result.json`; the ~150k
+file must be at least ~150k words and the ~300k (budget-bearing) file at
+least ~300k words. `PROVENANCE.md` records source URLs, license, and
+measured word counts. Do not fetch these over the network at test time
+(that breaks offline/deterministic tests and the privacy ethos); commit
+the bytes, mirroring the existing bundled-sample pattern
+(`scripts/makeSample.mjs`, `public/sample/aesops-fables.epub`). These
+fixtures are test assets under `test/fixtures/large/`; do not ship them in
+the app bundle.
 
 ---
 
-## 6. Test plan (which automated test proves each criterion)
+## 3. Ordered task list (each maps to acceptance criteria)
 
-### 6.1 Fixtures (committed under `test/fixtures/`)
-Build small **synthetic** EPUBs in code or as committed files (these are
-test assets, distinct from the shipped sample):
-- `ao3-style.epub` — EPUB2 with `toc.ncx`, a preface/metadata page, an
-  inline image, a chapter notes section, and 3 chapters with `h2`
-  titles.
-- `standard-ebooks-style.epub` — EPUB3 with `nav.xhtml`, semantic
-  sections, a colophon, and 3 chapters.
-- `no-toc.epub` — valid spine, no nav/NCX (tests title fallback).
-- `malformed.epub` — bytes that are not a valid ZIP, plus a second
-  variant with a valid ZIP but missing OPF (tests both throw paths).
-Each fixture ships with an expected-model JSON the tests assert against.
+### T1 — Engine types, units, default design, protocol
+Create `src/engine/types.ts`, `units.ts`, `defaultDesign.ts`, `protocol.ts`.
+Add `"WebWorker"` to `tsconfig.app.json` `lib`.
+**AC:** `npm run typecheck` and `npm run lint` pass. `units.ts` converts pt
+and in to px on the fixed 96 px/in basis; a unit test pins the conversions
+and the rounding helper. `DEFAULT_DESIGN` matches §2.7.
 
-### 6.2 Unit / integration tests (Vitest)
+### T2 — Measurer seam
+Implement `Measurer`, `SyntheticMeasurer`, and `OffscreenCanvasMeasurer`
+(with memoization and the `self.fonts.ready` await), plus the average-advance
+fallback.
+**AC:** `SyntheticMeasurer` is a pure deterministic function of
+(text, style), unit-tested. `OffscreenCanvasMeasurer` is covered by the
+Playwright run (jsdom cannot exercise it). The fallback is selected only
+when `OffscreenCanvas` is absent and logs once.
+
+### T3 — Line breaking + hyphenation
+Implement `hyphenate.ts` (hypher, language-selected, memoized) and
+`lineBreak.ts` (greedy, measurer-injected).
+**AC (SyntheticMeasurer):** words pack greedily to a set column width with
+correct break points; a word longer than the column hyphenates at a valid
+point with a soft hyphen on the prefix and the remainder carried; a word
+with no valid break sits on its own line without dropping text or looping;
+turning `hyphenation` off changes the breaks. No text is ever lost or
+duplicated across lines (a reassembly test proves line concatenation equals
+the source paragraph, ignoring inserted soft hyphens and normalized
+spaces).
+
+### T4 — Page assembly + chapter/recto/blank rules
+Implement `paginate.ts`: lines to pages, per-page line capacity, opener top
+drop, recto-opening with blank-verso insertion, `pageCount`, and correct
+`Page` metadata (`index`, `side`, `kind`, `chapterIndex`).
+**AC (SyntheticMeasurer):** on a crafted multi-chapter document, page count
+and per-page line counts match hand-computed expectations; each chapter
+begins on an `opener`; with `startRecto` true every opener has
+`side === 'recto'` and a blank verso is inserted exactly where a chapter
+would otherwise open on a verso; blanks carry no lines and
+`chapterIndex === -1`.
+
+### T5 — Widow/orphan control
+Implement §2.8 in `paginate.ts` (or a `widowOrphan.ts` it calls). Bounded,
+terminating, toggleable.
+**AC (SyntheticMeasurer):** on crafted paragraphs positioned to strand a
+line, with `widowControl` on no page ends with a lone orphan first line and
+no page begins with a lone widow last line, at both page and chapter
+boundaries; with it off the stranded line reappears (proving the control is
+what prevents it). A pathological case (a two-line paragraph against a
+one-line remainder, repeated) terminates and is deterministic.
+
+### T6 — Streaming engine + worker + client
+Implement `engine.ts` (slice-yielding pass emitting estimate, first pages,
+progress, done), `pagination.worker.ts` (holds the `Document`, uses
+`OffscreenCanvasMeasurer`, handles `load`/`paginate`, honors latest-wins
+cancellation), and `client.ts` (owns the worker, `load`/`paginate`,
+timing stamps, timings hook).
+**AC:** the worker paginates the held `Document` from a `design` message
+without re-sending the book. A new `paginate` supersedes an in-flight one
+(stale-id results are dropped). The client reports `firstFeedbackMs` and
+`settleMs` measured from dispatch. Proven in the Playwright run (T10);
+`engine.ts` slice/estimate logic is additionally unit-tested against a fake
+transport with the `SyntheticMeasurer`.
+
+### T7 — Determinism guarantees
+Ensure the core has no nondeterministic inputs and assembles results in a
+stable order.
+**AC:** running `paginate` twice on the same `Document` + `DesignSpec` +
+`SyntheticMeasurer` deep-equals (identical `pageCount` and identical
+`pages`). A second determinism check in the browser (T10) confirms an
+identical page count across two runs on a large real file.
+
+### T8 — Throwaway validation preview + app wiring
+Implement `EnginePreview.tsx` and wire it into `App.tsx`: after a
+successful parse, `load` the `Document` and `paginate` with
+`DEFAULT_DESIGN`, show a layout-stable "laying out" state, then render page
+count, the timing readout, and the first few pages as plainly laid-out
+lines. Bounded output (render only the first spread or few pages, never the
+whole book). Loading and error states in product voice; usable at 390px
+with no horizontal scroll; copy swept (§4). Explicitly provisional; EPIC 3
+replaces it.
+**AC:** loading the bundled sample (or a dropped EPUB) shows the page count
+and first laid-out pages without a blank screen; the DOM node count stays
+bounded regardless of book size; a forced engine error renders the designed
+error state, not a crash; the surface is usable at 390px. Existing EPIC 1
+tests still pass (the `empty | loading | ready | error` machine is extended,
+not broken).
+
+### T9 — Large real EPUB fixtures + provenance
+Commit the two real public-domain EPUBs under `test/fixtures/large/` and
+`PROVENANCE.md` (§2.11) with measured word counts.
+**AC:** both files parse through the existing `parseEpub` into ordered
+chapters; measured word counts are recorded and meet the ~150k / ~300k
+thresholds; `PROVENANCE.md` states source and license; the files are not
+included in the app bundle.
+
+### T10 — Perf + responsiveness + determinism harness (Playwright)
+`e2e/pagination.spec.ts`: load the app, import each large fixture via the
+file input, run the engine, read the exposed timings, and assert the
+budgets. Measure main-thread long tasks during the pass. Assert identical
+page count across two runs on the 300k file. Record the numbers.
+**AC:** on the ~300k file, `firstFeedbackMs <= 100` and
+`settleMs <= ~2000` (budget; see §8 kill condition); during the pass no
+main-thread long task exceeds the threshold (worker keeps the main thread
+responsive); two runs yield an identical page count. Numbers are recorded
+in `result.json` (and optionally a short report artifact).
+
+---
+
+## 4. Copy (throwaway preview only; swept)
+The validation preview is minimal, but its visible strings still meet the
+bar (positive, plain, no em-dashes, no banned vocabulary, no negative
+empty-state phrasing). Reference copy, already swept, ship it or better:
+- Laying-out state: **Laying out your book**
+- Page-count readout (estimate, then exact): **About {n} pages** then
+  **{n} pages**
+- Preview error heading: **Run the layout again**
+- Preview error body: **The layout stopped before it finished. Reload the
+  book to try again.**
+- Timing readout label (validation detail): **First view {a} ms, settled
+  {b} ms**
+
+Sweep note before done: reject the characters "—" and "–", the words
+"seamlessly / effortlessly / unlock / elevate / empower / leverage / robust
+/ dive in", and negative openers ("You don't have", "No … yet", "Nothing
+here", "Unable to", "Something went wrong") in every shipped string,
+including anything added to `EnginePreview.tsx` and the error path.
+
+---
+
+## 5. Test plan (which automated test proves each criterion)
+
+### 5.1 Unit / integration (Vitest + jsdom, `SyntheticMeasurer`, co-located `*.test.ts`)
 | Criterion | Test |
 |---|---|
-| Ordered chapters + correct titles (AO3 + Standard/Gutenberg) | `parseEpub` on both fixtures deep-equals expected chapter `order`+`title` arrays |
-| No usable TOC | `no-toc.epub` yields first-heading / `Chapter N` titles |
-| Malformed → typed error, no crash | corrupt-ZIP and missing-OPF fixtures each throw the matching `ParseError`; `ErrorState` renders it (component test) with no thrown render |
-| Image/note policy + report | kept/dropped counts and per-record `kind` for both style fixtures match expected; assert no `dropReason`/`detail` contains body text |
-| Single bad chapter is contained | fixture with one unparseable chapter still returns a `Document`; that chapter has empty blocks + a record |
-| Size cap / non-EPUB rejected | oversized and non-zip inputs throw and surface the error state |
-| No network carries file content | spy/mimic `fetch`/`XMLHttpRequest`/`navigator.sendBeacon`; run a full import and assert none is called with file bytes (parser is pure over bytes; import controller uses no network) |
-| Integrations gated + PII-safe | with empty config, `initSentry`/`initUmami` make no calls; with injected config, they init with expected args and `beforeSend` drops file name/title/text |
-| Empty / loading / error states | component tests assert each state renders its designed content (copy, actions, layout-stable skeleton) and is reachable via the `App` state machine |
-| Structure view correctness | given a parsed `Document`, view shows title/author, ordered titles, and matching kept/dropped counts |
-| A11y basics | tests assert labeled inputs, a focusable primary action, and heading structure on the import + structure surfaces |
+| Units + rounding deterministic | `units.test.ts` pins pt/in -> px and the rounding helper |
+| Greedy breaking + hyphenation, no text loss | `lineBreak.test.ts`: exact break points at a set column; hyphenate an over-long word; unbreakable word on its own line; toggle changes breaks; reassembled lines equal source |
+| Page assembly + chapter/recto/blank rules | `paginate.test.ts`: page count and per-page line counts match hand-computed; openers per chapter; recto rule inserts a blank verso exactly where needed; blank metadata correct |
+| Widow/orphan prevents stranded lines | `paginate.test.ts` (or `widowOrphan.test.ts`): no lone orphan/widow at page and chapter boundaries with control on; stranded line reappears with control off; pathological case terminates deterministically |
+| Determinism | run `paginate` twice, deep-equal result incl. `pageCount` |
+| Streaming/estimate/cancellation logic | `engine.test.ts` against a fake transport: first-feedback message carries an estimate and first pages; a superseded `requestId` is abandoned |
+| Preview states | `EnginePreview.test.tsx`: laying-out, populated, and error states render designed content; DOM output bounded; copy swept |
+| App wiring intact | existing `App.test.tsx` and state tests still pass; parse -> load -> paginate path reaches the preview |
 
-### 6.3 Manual / documented verification (implementer runs; record in result)
-These cannot run in the unit test runner but are part of DONE:
-1. **Docker serve + sample:** build the image, `docker compose -f
-   docker-compose.staging.yml up`, open the app, tap the sample, confirm
-   parsed structure appears within a minute with no user file.
-2. **Privacy / offline:** open devtools network tab, import a real EPUB,
-   confirm zero requests carry file bytes; then set devtools to offline
-   and confirm import + parse still work on an already-loaded tab.
-3. **Runtime config:** run the container with and without `SENTRY_DSN`/
-   `UMAMI_*` set; confirm `config.js` reflects env and integrations turn
-   on/off accordingly; confirm no secret is present in `dist/` or git.
-4. **390px pass:** at a 390px viewport, confirm every control is
-   reachable, no horizontal scroll, comfortable tap targets, readable
-   text.
+### 5.2 Browser harness (Playwright, `e2e/pagination.spec.ts`, Chromium)
+| Criterion | Test |
+|---|---|
+| First feedback ≤ 100ms; 300k settles ≤ ~2s; measured/recorded | run the engine on the ~300k fixture; read exposed `Timings`; assert budgets; record numbers |
+| Runs in a Web Worker; main thread responsive | assert the worker exists and does the work; observe main-thread long tasks during the pass and assert none exceed the threshold |
+| Deterministic page count across runs | paginate the 300k fixture twice in-browser; assert identical `pageCount` |
+| Real 150k + 300k files paginate end to end | both fixtures import and produce a full `PaginationResult` with a plausible page count |
 
-Record measurements/results for §6.3 in `result.json` `summary` and, if
-useful, a short report artifact.
+### 5.3 Recorded verification (part of DONE)
+Record in `result.json` `summary` (and optionally a short report artifact):
+measured `firstFeedbackMs` and `settleMs` for the 150k and 300k files, the
+measured word counts of both fixtures, the resulting page counts, and the
+observed max main-thread long-task duration during a pass.
 
 ---
 
-## 7. QUALITY BAR mapping (binding, budget from the start)
+## 6. Data model / migrations
+No database, no on-disk format, no persistence. All new types
+(`DesignSpec`, `PaginationResult`, `Page`, `Line`, `TextStyle`, `Timings`,
+the protocol messages) are in-memory only, so there are no migrations. The
+existing `Document`/`ImportReport` shapes in `src/model/` are consumed
+read-only and are not changed.
 
-- **§1 Perceived speed:** first meaningful render is the empty state with
-  real content (dropzone + sample), not a blank page. The import shows a
-  layout-stable loading state immediately; parsing does not present a
-  frozen white screen. No unindexed hot-path queries exist (no server);
-  the structure view lists chapters (bounded by book size) and must not
-  render every block of a 300k-word book eagerly in a way that janks
-  (render chapter summaries + counts, expand on demand).
-- **§2 Mobile-first:** the import surface and structure view are fully
-  usable at 390px. Single-column; ~44px targets; no horizontal scroll.
-- **§3 Designed states:** empty, loading (skeleton), and error are
-  designed surfaces here, and each is tested (§6.2).
-- **§4 First-run:** a brand-new user landing on the empty state
-  understands what the product does (turn an EPUB into a printable book)
-  and reaches the core action available at this stage in one tap: open a
-  book, with the bundled sample bridging the "no file handy" gap and
-  producing real parsed output. The full guided drop-to-export
-  walkthrough is EPIC 7 and is explicitly out of scope here; do not build
-  a partial walkthrough. This EPIC satisfies §4 for the surface that
-  exists (understand + reach the core action + working example).
+---
+
+## 7. QUALITY BAR mapping (binding; budget from the start)
+- **§1 Perceived speed:** this is the EPIC. First feedback ≤ 100ms, settle
+  ≤ ~2s on 300k, both measured. The preview renders bounded output (first
+  pages only), never the whole book eagerly, so it does not jank as page
+  count grows.
+- **§2 Mobile-first:** the throwaway preview is usable at 390px, single
+  column, no horizontal scroll. (Facing pages are EPIC 3.)
+- **§3 Designed states:** the preview has a layout-stable "laying out"
+  state and a product-voice error state, both tested.
+- **§4 First-run:** out of scope here (the drop-to-export walkthrough is
+  EPIC 7). The preview must not regress EPIC 1's first-run: the sample
+  still loads and now also shows a real page count and first laid-out
+  pages, which strengthens "understand what the product does."
 - **§5 Security hygiene:** no server, so authz/rate-limit are N/A by
-  construction; boundary validation happens at the parse boundary (file
-  type, size cap, structure); React handles output encoding; Sentry
-  scrubs PII and no file-derived data is logged; secrets via runtime env
-  only.
-- **§6 Accessibility:** labeled inputs, visible focus, semantic headings
-  and landmarks, meaningful alt handled (images are recorded with alt,
-  not shown), keyboard reaches every control.
-- **§7 Radically simple interface:** the empty state has ONE obvious
-  primary action (choose an EPUB) with the sample as a visibly
-  subordinate secondary action. No walls of text.
-- **§8 Copy that sounds human:** all visible strings are positive and
-  plain, with no em-dashes, no banned vocabulary, and no negative
-  empty-state phrasing. Sweep before done. Reference copy below is
-  already swept; ship it or better.
-- **§9 README:** stranger-facing, verified run commands, no pipeline
-  jargon.
+  construction. The engine runs on already-parsed, in-browser data; no
+  network path is added. No file text is placed in worker errors, timing
+  hooks, or logs (privacy / no-PII).
+- **§6 Accessibility:** the preview uses semantic structure, labeled
+  controls if any, and visible focus. No images are rendered.
+- **§7 Radically simple interface:** the preview is a bare validation
+  surface, not a second product screen. Do not add controls or chrome;
+  EPIC 3/4 own the real UI.
+- **§8 Copy that sounds human:** §4 reference copy is swept; sweep anything
+  added before done.
+- **§9 README:** no change required by this EPIC beyond keeping it accurate;
+  if the run surfaces user-facing behavior, keep the README truthful. Do
+  not add pipeline jargon.
 
-### Reference copy (already swept; use or improve)
-- Empty state heading: **Open a book to begin**
-- Empty state body: **Drop an EPUB here or choose a file. Your book stays
-  on your computer.**
-- Primary action: **Choose EPUB file**
-- Secondary action: **Open the sample book**
-- Loading: **Reading your book**  (with a layout-stable skeleton)
-- Error (unreadable file): heading **This file is not a readable EPUB.**
-  body **Choose a valid .epub and try again.** actions **Try another
-  file** / **Open the sample book**
-- Error (too large): **This file is larger than the {N} MB limit. Choose
-  a smaller EPUB.**
-- Import report label: **Kept {p} paragraphs and {h} headings. Set aside
-  {i} images and {b} extra sections.**  (Use "Set aside", not negative
-  phrasing; show the detail list on expand.)
-
-Sweep note: reject the characters "—" and "–", the words "seamlessly /
-effortlessly / unlock / elevate / empower / leverage / robust / dive in",
-and negative openers ("You don't have", "No … yet", "Nothing here",
-"Unable to", "Something went wrong") in every shipped string.
+Reconciliation: meeting the bar on the throwaway preview (bounded output,
+loading/error states, 390px, swept copy) is in scope. Polishing it beyond
+that (facing pages, virtualization, headers, animations) is EPIC 3's work
+and would be drift here.
 
 ---
 
 ## 8. Definition of done
-- All ten tasks' ACs met; every planner acceptance criterion below maps
-  to a passing test or a recorded §6.3 verification.
-- `lint`, `typecheck`, `test`, `build` green.
-- Docker staging serves the app and the sample renders with no user file.
-- No secret in any tracked file; `.env.example` placeholders only.
-- Copy swept; states designed and tested; 390px verified.
+- All ten tasks' ACs met; every planner acceptance criterion below maps to
+  a passing test or a recorded §5.3 measurement.
+- `lint`, `typecheck`, `test` (Vitest) and the Playwright harness are green.
+- The engine runs in a Web Worker; the main thread stays responsive during
+  a full pass (measured).
+- Results are deterministic (identical input + design -> identical page
+  count and pages).
+- Widow/orphan control demonstrably prevents stranded lines at page and
+  chapter boundaries on the test files, and is toggleable.
+- Copy swept; preview states designed and tested; 390px verified.
+- Measured `firstFeedbackMs`, `settleMs`, word counts, and page counts are
+  recorded in `result.json`.
+
+**Kill condition (from the validation, binding):** if first feedback
+exceeds 100ms, or the settle time exceeds ~2s on the ~300k-word file, this
+EPIC is **failed**, not degraded. Do not fake the budget by downsampling,
+capping content, estimating instead of paginating, or skipping widow/orphan
+work. If the budget cannot be met, set `outcome: "failure"` and report the
+measured numbers so the owner sees the real signal.
 
 ### Planner AC → coverage
-1. *Docker serves; sample renders within a minute, no user file* → T7,
-   T9; §6.3(1).
-2. *AO3 + Standard/Gutenberg parse to ordered correct-title chapters;
-   malformed shows designed error, no crash/blank* → T2, T3, T5; §6.2
-   rows 1–3.
-3. *Images and author notes handled per documented policy; app records
-   and can report kept/dropped* → §4, T4, T6; §6.2 row 4.
-4. *No network request carries file content; offline after first load* →
-   T5, T8; §6.2 network row; §6.3(2).
-5. *Error tracking + analytics init from env; no secrets in tracked
-   files* → T8, T9; §6.2 integrations row; §6.3(3).
+1. *Paginates real 150k + 300k EPUBs (named files); first page-count and
+   preview feedback ≤ 100ms; 300k settles ≤ ~2s, measured and recorded* →
+   T6, T8, T9, T10; §5.2 rows 1 and 4; §5.3.
+2. *Runs in a Web Worker; main thread stays responsive, no long-task jank*
+   → T6; §5.2 row 2.
+3. *Deterministic: identical input and settings -> identical page count
+   across runs* → T7; §5.1 determinism row; §5.2 row 3.
+4. *Widow/orphan control demonstrably prevents single stranded lines at
+   page and chapter boundaries on the test files* → T5; §5.1 widow/orphan
+   row.
+5. *Failing the 100ms or ~2s budget on the 300k file fails the EPIC (kill
+   condition), not degraded* → §8 kill condition; T10 asserts the budgets
+   and the run reports failure rather than degrading if unmet.
