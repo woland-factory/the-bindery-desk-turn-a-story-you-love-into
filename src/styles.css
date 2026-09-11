@@ -368,6 +368,85 @@ body {
   white-space: nowrap;
 }
 
+/* --- Engine preview (throwaway validation surface) --- */
+.preview {
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.preview__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.preview__heading {
+  font-size: 1.15rem;
+  margin: 0 0 0.75rem;
+}
+
+.preview__timing {
+  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.preview__panel {
+  margin-top: 0.5rem;
+}
+
+.preview__pages {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.preview__page {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.1rem 1.2rem;
+  min-height: 4rem;
+  box-shadow: var(--shadow);
+}
+
+.preview__page[data-kind="blank"]::after {
+  content: "";
+  display: block;
+  min-height: 2rem;
+}
+
+.preview__page--skeleton {
+  min-height: 9rem;
+  background: linear-gradient(
+    90deg,
+    var(--line),
+    color-mix(in srgb, var(--line) 55%, var(--surface)),
+    var(--line)
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+  border: none;
+}
+
+.preview__line {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview__page--skeleton {
+    animation: none;
+  }
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;

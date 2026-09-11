@@ -8,6 +8,7 @@ import { ImportSurface } from "./ui/ImportSurface";
 import { LoadingState } from "./ui/LoadingState";
 import { ErrorState, type AppError } from "./ui/ErrorState";
 import { StructureView } from "./ui/StructureView";
+import { EnginePreview } from "./ui/EnginePreview";
 
 type State =
   | { status: "empty" }
@@ -90,7 +91,10 @@ export default function App() {
         )}
         {state.status === "loading" && <LoadingState name={state.name} />}
         {state.status === "ready" && (
-          <StructureView document={state.document} report={state.report} onReset={reset} />
+          <>
+            <StructureView document={state.document} report={state.report} onReset={reset} />
+            <EnginePreview document={state.document} />
+          </>
         )}
         {state.status === "error" && (
           <ErrorState
