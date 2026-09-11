@@ -1,5 +1,5 @@
-import type { Chapter, Document } from "../model/document";
-import type { DesignSpec, Line, Page, PaginationResult } from "./types";
+import type { Block, Chapter, Document } from "../model/document";
+import type { DesignSpec, Line, Page, PageKind, PaginationResult } from "./types";
 import type { Measurer, TextStyle } from "./measurer";
 import { lengthToPx, ptToPx, roundPx } from "./units";
 import { breakParagraph, type BrokenLine } from "./lineBreak";
@@ -8,9 +8,12 @@ import { runEngine } from "./engine";
 
 // Page assembly: paragraphs -> pages, with per-page line capacity, opener top
 // drop, recto-opening with blank-verso insertion, widow/orphan control, and
-// an exact page count. Pure and deterministic. The full streaming pass lives
-// in engine.ts and reuses these helpers, so the streamed result and the
-// pure result are produced by exactly one code path.
+// an exact page count. Pure and deterministic. Line breaking is lazy: a
+// chapter's paragraphs are measured only as far as the pages emitted so far
+// need, so the streaming engine can post the first pages after breaking a
+// handful of paragraphs rather than a whole chapter. The full pass in
+// engine.ts reuses these helpers, so the streamed result and the pure result
+// come from exactly one code path.
 
 /** Derived, constant-per-design layout geometry, all in CSS px. */
 export interface LayoutMetrics {
@@ -57,55 +60,11 @@ interface FlowLine {
   idxInPara: number;
 }
 
-export interface ChapterFlow {
-  lines: FlowLine[];
-  wordCount: number;
-}
-
-/** Break one chapter's kept flowable blocks into a flat, metadata-tagged line list. */
-export function chapterFlow(
-  chapter: Chapter,
-  metrics: LayoutMetrics,
-  measurer: Measurer,
-  hyphenator: Hyphenator,
-  hyphenation: boolean,
-): ChapterFlow {
-  const lines: FlowLine[] = [];
-  let wordCount = 0;
-  for (const block of chapter.blocks) {
-    if (block.keptOrDropped !== "kept") continue;
-    if (block.type !== "heading" && block.type !== "paragraph" && block.type !== "note") continue;
-    const text = block.text ?? "";
-    if (!text) continue;
-    wordCount += countWords(text);
-    const style = block.type === "heading" ? metrics.headingStyle : metrics.bodyStyle;
-    const broken = breakParagraph(text, {
-      columnPx: metrics.columnPx,
-      style,
-      measurer,
-      hyphenator,
-      hyphenation,
-    });
-    for (let i = 0; i < broken.length; i++) {
-      lines.push({ line: broken[i], paraLen: broken.length, idxInPara: i });
-    }
-  }
-  return { lines, wordCount };
-}
-
-function countWords(text: string): number {
-  let n = 0;
-  let inWord = false;
-  for (const ch of text) {
-    const space = ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
-    if (!space && !inWord) {
-      n++;
-      inWord = true;
-    } else if (space) {
-      inWord = false;
-    }
-  }
-  return n;
+/** A page before its book-wide index and side are known. */
+export interface ProtoPage {
+  kind: PageKind;
+  chapterIndex: number;
+  lines: Line[];
 }
 
 /**
@@ -144,24 +103,74 @@ function decideTake(
   return greedy;
 }
 
-/** Lay a chapter's flow onto pages, appending to `pages`. */
-export function packChapter(
-  chapterOrder: number,
-  flow: FlowLine[],
+function countWords(text: string): number {
+  let n = 0;
+  let inWord = false;
+  for (const ch of text) {
+    const space = ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+    if (!space && !inWord) {
+      n++;
+      inWord = true;
+    } else if (space) {
+      inWord = false;
+    }
+  }
+  return n;
+}
+
+/**
+ * Lay one chapter onto pages, breaking its paragraphs lazily. Yields each
+ * ProtoPage as it is completed and returns the chapter's word count. A chapter
+ * with no kept flowable text yields nothing (front matter and boilerplate open
+ * no page).
+ */
+export function* paginateChapter(
+  chapter: Chapter,
   metrics: LayoutMetrics,
+  measurer: Measurer,
+  hyphenator: Hyphenator,
+  hyphenation: boolean,
   widowControl: boolean,
-  pages: Page[],
-): void {
+): Generator<ProtoPage, number> {
+  const blocks = chapter.blocks.filter(isFlowable);
+  const buffer: FlowLine[] = [];
+  let blockIndex = 0;
+  let words = 0;
+
+  // Break more paragraphs until the buffer holds at least `n` lines or the
+  // chapter's blocks are exhausted.
+  const ensure = (n: number) => {
+    while (buffer.length < n && blockIndex < blocks.length) {
+      const block = blocks[blockIndex++];
+      const text = block.text ?? "";
+      words += countWords(text);
+      const style = block.type === "heading" ? metrics.headingStyle : metrics.bodyStyle;
+      const broken = breakParagraph(text, {
+        columnPx: metrics.columnPx,
+        style,
+        measurer,
+        hyphenator,
+        hyphenation,
+      });
+      for (let i = 0; i < broken.length; i++) {
+        buffer.push({ line: broken[i], paraLen: broken.length, idxInPara: i });
+      }
+    }
+  };
+
   let cursor = 0;
   let firstPage = true;
-  while (cursor < flow.length) {
+  ensure(1);
+  while (cursor < buffer.length) {
     const capacity = firstPage ? metrics.openerLinesPerPage : metrics.bodyLinesPerPage;
+    // One extra line beyond capacity gives widow/orphan its lookahead.
+    ensure(cursor + capacity + 1);
+    const take = decideTake(buffer, cursor, capacity, widowControl);
     const topDrop = firstPage ? metrics.openerTopDropPx : 0;
-    const take = decideTake(flow, cursor, capacity, widowControl);
 
     const lines: Line[] = [];
     for (let i = 0; i < take; i++) {
-      const { line } = flow[cursor + i];
+      const { line } = buffer[cursor + i];
       lines.push({
         text: line.text,
         x: 0,
@@ -170,18 +179,19 @@ export function packChapter(
         hyphenated: line.hyphenated,
       });
     }
+    yield { kind: firstPage ? "opener" : "body", chapterIndex: chapter.order, lines };
 
-    const index = pages.length;
-    pages.push({
-      index,
-      side: sideForIndex(index),
-      kind: firstPage ? "opener" : "body",
-      chapterIndex: chapterOrder,
-      lines,
-    });
     cursor += take;
     firstPage = false;
+    ensure(cursor + 1);
   }
+  return words;
+}
+
+function isFlowable(block: Block): boolean {
+  if (block.keptOrDropped !== "kept") return false;
+  if (block.type !== "heading" && block.type !== "paragraph" && block.type !== "note") return false;
+  return !!block.text;
 }
 
 /** Insert a blank verso before an opener that would otherwise land on a verso. */
@@ -191,6 +201,18 @@ export function maybeInsertRectoBlank(design: DesignSpec, pages: Page[]): void {
   if (sideForIndex(nextIndex) === "verso") {
     pages.push({ index: nextIndex, side: "verso", kind: "blank", chapterIndex: -1, lines: [] });
   }
+}
+
+/** Append a proto-page to `pages`, assigning its book-wide index and side. */
+export function appendPage(pages: Page[], proto: ProtoPage): void {
+  const index = pages.length;
+  pages.push({
+    index,
+    side: sideForIndex(index),
+    kind: proto.kind,
+    chapterIndex: proto.chapterIndex,
+    lines: proto.lines,
+  });
 }
 
 /** Iterate chapters in reading order (by `order`), stably. */

@@ -15,7 +15,6 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 let heldDocument: Document | null = null;
 let currentRequestId = 0;
 let measurer: Measurer | null = null;
-let fontsReady = false;
 
 function post(message: WorkerToMain): void {
   ctx.postMessage(message);
@@ -25,10 +24,20 @@ function macrotask(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+// This EPIC's default design uses a system serif stack (Georgia, Times, serif)
+// whose metrics resolve synchronously, so there is no web font to wait for.
+// We deliberately do NOT gate the pass on `self.fonts.ready`: it does not
+// resolve in a dedicated worker in some engines, and any wait would push first
+// feedback past the 100ms budget. A later EPIC that embeds custom fonts warms
+// them before measuring instead of blocking the first pass.
+
 ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
   const msg = event.data;
   if (msg.type === "load") {
+    // Deserializing the message already ingested the book; acknowledge so the
+    // client can start the hot path with the worker warm.
     heldDocument = msg.document;
+    post({ type: "loaded", requestId: msg.requestId });
     return;
   }
 
@@ -39,18 +48,6 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
   if (!heldDocument) {
     post({ type: "error", requestId, message: "Reload the book to lay it out." });
     return;
-  }
-
-  // Await the intended font once so measureText uses it, not a mid-load
-  // fallback. A newer request during the await supersedes this one.
-  if (!fontsReady && "fonts" in ctx && ctx.fonts?.ready) {
-    try {
-      await ctx.fonts.ready;
-    } catch {
-      // Fonts are best-effort; measurement still runs with system metrics.
-    }
-    fontsReady = true;
-    if (requestId !== currentRequestId) return;
   }
 
   if (!measurer) measurer = createRuntimeMeasurer();

@@ -3,11 +3,11 @@ import type { DesignSpec, Page, PaginationResult } from "./types";
 import type { Measurer } from "./measurer";
 import { createHyphenator } from "./hyphenate";
 import {
-  chapterFlow,
+  appendPage,
   computeMetrics,
   maybeInsertRectoBlank,
   orderedChapters,
-  packChapter,
+  paginateChapter,
   type LayoutMetrics,
 } from "./paginate";
 
@@ -71,19 +71,31 @@ export function* runEngine(
   let emittedFirst = false;
 
   for (const chapter of chapters) {
-    const flow = chapterFlow(chapter, metrics, measurer, hyphenator, design.hyphenation);
-    wordCount += flow.wordCount;
-    if (flow.lines.length > 0) {
-      maybeInsertRectoBlank(design, pages);
-      packChapter(chapter.order, flow.lines, metrics, design.widowControl, pages);
+    const gen = paginateChapter(
+      chapter,
+      metrics,
+      measurer,
+      hyphenator,
+      design.hyphenation,
+      design.widowControl,
+    );
+    let step = gen.next();
+    let firstOfChapter = true;
+    while (!step.done) {
+      if (firstOfChapter) {
+        // Reserve a blank verso only once we know this chapter has a page.
+        maybeInsertRectoBlank(design, pages);
+        firstOfChapter = false;
+      }
+      appendPage(pages, step.value);
+      if (!emittedFirst && pages.length >= FIRST_PAGES) {
+        yield { type: "progress", estimatedPageCount, firstPages: pages.slice(0, FIRST_PAGES) };
+        emittedFirst = true;
+      }
+      step = gen.next();
     }
-
-    if (!emittedFirst && pages.length > 0) {
-      yield { type: "progress", estimatedPageCount, firstPages: pages.slice(0, FIRST_PAGES) };
-      emittedFirst = true;
-    } else {
-      yield { type: "tick" };
-    }
+    wordCount += step.value; // the generator returns the chapter's word count
+    yield { type: "tick" };
   }
 
   if (!emittedFirst) {

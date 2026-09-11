@@ -21,6 +21,12 @@ export interface PaginateMessage {
 
 export type MainToWorker = LoadMessage | PaginateMessage;
 
+/** Acknowledges that the book is ingested and held; the hot path can start. */
+export interface LoadedMessage {
+  type: "loaded";
+  requestId: number;
+}
+
 /** First-feedback and refinement: a cheap estimate plus the first real pages. */
 export interface ProgressMessage {
   type: "progress";
@@ -44,4 +50,4 @@ export interface ErrorMessage {
   message: string;
 }
 
-export type WorkerToMain = ProgressMessage | DoneMessage | ErrorMessage;
+export type WorkerToMain = LoadedMessage | ProgressMessage | DoneMessage | ErrorMessage;

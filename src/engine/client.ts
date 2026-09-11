@@ -34,6 +34,10 @@ export class EngineClient implements EngineClientLike {
   private worker: Worker;
   private nextId = 1;
   private active: ActiveRequest | null = null;
+  private loaded = false;
+  // A paginate requested before the book finished loading waits here, so its
+  // timing measures the engine rather than the one-time book ingest.
+  private queued: { design: DesignSpec; handlers: PaginateHandlers } | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./pagination.worker.ts", import.meta.url), {
@@ -43,19 +47,29 @@ export class EngineClient implements EngineClientLike {
   }
 
   load(doc: Document): void {
+    this.loaded = false;
     this.send({ type: "load", requestId: this.nextId++, document: doc });
   }
 
   paginate(design: DesignSpec, handlers: PaginateHandlers): void {
-    const id = this.nextId++;
-    this.active = { id, dispatchTs: now(), gotFirst: false, handlers };
-    this.send({ type: "paginate", requestId: id, design });
+    if (!this.loaded) {
+      this.queued = { design, handlers };
+      return;
+    }
+    this.dispatchPaginate(design, handlers);
   }
 
   dispose(): void {
     this.worker.onmessage = null;
     this.worker.terminate();
     this.active = null;
+    this.queued = null;
+  }
+
+  private dispatchPaginate(design: DesignSpec, handlers: PaginateHandlers): void {
+    const id = this.nextId++;
+    this.active = { id, dispatchTs: now(), gotFirst: false, handlers };
+    this.send({ type: "paginate", requestId: id, design });
   }
 
   private send(message: MainToWorker): void {
@@ -63,6 +77,14 @@ export class EngineClient implements EngineClientLike {
   }
 
   private onMessage(msg: WorkerToMain): void {
+    if (msg.type === "loaded") {
+      this.loaded = true;
+      const queued = this.queued;
+      this.queued = null;
+      if (queued) this.dispatchPaginate(queued.design, queued.handlers);
+      return;
+    }
+
     const active = this.active;
     if (!active || msg.requestId !== active.id) return; // superseded or unknown
 
