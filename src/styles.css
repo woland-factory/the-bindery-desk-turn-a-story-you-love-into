@@ -369,7 +369,15 @@ body {
 }
 
 /* --- Facing-page preview --- */
+/* The preview breaks out of the narrow reading column so facing spreads have
+   room on a wide screen. It stays centered on the viewport and never wider
+   than the viewport, so a 390px screen sees one page and no horizontal
+   scroll. */
 .preview {
+  width: min(1120px, calc(100vw - 2rem));
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
   margin-top: 2rem;
   padding-top: 1.5rem;
   border-top: 1px solid var(--line);
@@ -511,6 +519,10 @@ body {
     display: none;
   }
   .preview {
+    position: static;
+    left: auto;
+    transform: none;
+    width: auto;
     margin: 0;
     padding: 0;
     border: none;
