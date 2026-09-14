@@ -33,8 +33,10 @@ export function windowSpreads(
   const firstVisible = Math.floor(top / stride);
   const lastVisible = Math.floor((top + Math.max(0, viewportPx)) / stride);
 
-  const firstSpread = Math.max(0, firstVisible - overscan);
-  const lastSpread = Math.min(spreadCount - 1, lastVisible + overscan);
+  // Clamp both ends into range so a scrollTop past the content (or a stale one
+  // after a shorter result swaps in) still yields a valid, non-empty window.
+  const firstSpread = Math.min(Math.max(0, firstVisible - overscan), spreadCount - 1);
+  const lastSpread = Math.min(spreadCount - 1, Math.max(firstSpread, lastVisible + overscan));
 
   return { firstSpread, lastSpread, topPadPx: firstSpread * stride, totalPx };
 }

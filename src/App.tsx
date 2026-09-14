@@ -8,7 +8,7 @@ import { ImportSurface } from "./ui/ImportSurface";
 import { LoadingState } from "./ui/LoadingState";
 import { ErrorState, type AppError } from "./ui/ErrorState";
 import { StructureView } from "./ui/StructureView";
-import { EnginePreview } from "./ui/EnginePreview";
+import { BookPreview } from "./ui/BookPreview";
 
 type State =
   | { status: "empty" }
@@ -93,7 +93,7 @@ export default function App() {
         {state.status === "ready" && (
           <>
             <StructureView document={state.document} report={state.report} onReset={reset} />
-            <EnginePreview document={state.document} />
+            <BookPreview document={state.document} onReset={reset} />
           </>
         )}
         {state.status === "error" && (

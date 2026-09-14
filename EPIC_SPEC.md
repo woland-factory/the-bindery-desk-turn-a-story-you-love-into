@@ -1,668 +1,616 @@
-# EPIC SPEC — Pagination engine (the risk concentrate)
+# EPIC SPEC — Live facing-page preview
 
-> EPIC 2 of The Bindery Desk. This is the depth-first investment the whole
-> product is built around: measurement-based pagination of a whole book,
-> computed in a Web Worker, off the main thread, with progressive feedback.
-> It consumes the parsed `Document` model from EPIC 1 (read-only) and
-> produces a page-by-page layout plus an exact page count. It ships a
-> deliberately minimal, throwaway preview only to prove the engine works
-> end to end. Polished facing-page rendering is EPIC 3, dials are EPIC 4,
-> the budget solver is EPIC 5, and imposition/export is EPIC 6. None of
-> those are in this EPIC.
+> EPIC 3 of The Bindery Desk. This is the screen the north star opens on: a
+> binder drops their file and, before touching a setting, sees a book worth
+> printing. Facing pages, mirrored margins across the gutter, running
+> headers, folios, chapters opening recto. It consumes the pagination
+> engine's output from EPIC 2 (read-only) and turns each `Page`'s per-line
+> geometry into a real, book-shaped, virtualized surface: geometry computed
+> for the whole book, only the visible spreads in the DOM.
+>
+> This EPIC adds NO typography controls (EPIC 4), NO paper-budget slider
+> (EPIC 5), NO export (EPIC 6), and it does not edit the text. It renders one
+> fixed design (`DEFAULT_DESIGN`) beautifully and fast, and it replaces the
+> throwaway `EnginePreview` end to end.
 
 ---
 
 ## Quality differentiator (this product must win here)
 
 **Live responsiveness of the whole-book re-flow.** Any control, above all
-the paper-budget slider, must re-flow the entire book with perceptible
-feedback under 100ms and settle within about two seconds on a 300k-word
-novel. Not more dials than InDesign. Faster, live feedback than anything
-free (Word, Calibre, Reedsy).
+the paper-budget slider (later EPICs), must re-flow the entire book with
+perceptible feedback under 100ms and settle within about two seconds on a
+300k-word novel. We do not out-feature InDesign. We make control immediate
+and reversible in a way no free path (Word, Calibre, Reedsy) offers.
 
-**What it demands of THIS EPIC:** this EPIC *is* the responsiveness
-engine. Every later re-flow (dials in EPIC 4, the slider in EPIC 5) calls
-straight into what is built here, so the differentiator lives or dies on
-this code. The two budgets below are not "nice to have" performance
-targets, they are the acceptance criteria and the kill condition:
+**What it demands of THIS EPIC:** the renderer is the surface every future
+re-flow paints onto, so it must stay O(visible spreads), never O(page
+count), on every event:
 
-- First feedback (an estimated page count and the first real pages) within
-  **100ms** of a pagination request.
-- A settled, exact full-book result within **about 2 seconds** on a
-  300k-word book.
+- **First paint** of the first spread comes from the engine's streamed
+  `firstPages` (the `progress` message), so a book shows its shape within
+  the 100ms first-feedback window and never blocks on the full pass.
+- **Scrolling** a 300-page book keeps only the visible spreads (plus a small
+  overscan) mounted, so node count and per-frame work stay bounded and the
+  scroll never janks.
+- **Swapping the result** (progress → done now; a re-paginated result from
+  EPIC 4/5 later) re-renders only the visible spreads. The design of this
+  component is what keeps EPIC 5's slider inside its budget, so no code path
+  here may walk or mount all pages. If the renderer became O(page count) on
+  any update, the differentiator would die in the next EPIC.
 
-The architecture is chosen to make later re-flows instant: the worker
-holds the parsed `Document` in memory and re-paginates from a changed
-`DesignSpec` alone, so a slider drag never re-transfers or re-parses the
-book. If the engine cannot hit the budgets on the named 300k-word file,
-this EPIC fails. It is never degraded around (downsampling, faking a page
-count, skipping content). See §8 kill condition.
+The engine already hits the 100ms / ~2s budgets (EPIC 2, measured). This
+EPIC must not regress them: the main thread's only new work is rendering the
+first spread and the visible window, both bounded.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **A pure, deterministic pagination core** that turns a `Document` plus a
-   `DesignSpec` into a `PaginationResult` (pages, per-page line geometry,
-   exact page count). Text measurement is injected through a `Measurer`
-   interface so the core is testable without a browser.
-2. **Measurement-based line breaking.** Greedy (first-fit) line breaking
-   using real text-advance widths, with Knuth-Liang hyphenation to break a
-   word that overflows the column.
-3. **Widow and orphan control** at page boundaries and at chapter
-   boundaries, toggleable, and guaranteed to terminate.
-4. **Chapter-opening and blank-page rules** that change the page count:
-   each chapter starts a new page, and (when the design asks for it) a
-   chapter opens on a recto, inserting a blank verso where needed.
-5. **A Web Worker** that runs the whole pass off the main thread, with a
-   streaming protocol: an early first-feedback message, incremental
-   progress, and a final settled result. Requests are cancelable
-   (latest-wins) so a rapid series of re-flows does not queue up.
-6. **A main-thread client** that owns the worker, sends `load` once per
-   book and `paginate` per design, and surfaces streamed results and
-   timings.
-7. **A minimal, explicitly throwaway preview surface** that renders the
-   engine output (page count, timing readout, the first few pages as plain
-   laid-out lines) purely to validate the engine end to end. It has a
-   loading and an error state and works at 390px, and it is replaced whole
-   by EPIC 3.
-8. **Named large test files:** a real ~150k-word EPUB and a real
-   ~300k-word EPUB committed with provenance, plus the perf harness that
-   measures and records the budgets against them.
+1. **A virtualized facing-page renderer.** Given a `PaginationResult` (the
+   whole book's pages, already laid out by the engine) and the active
+   `DesignSpec`, render a scrollable book surface that computes each spread's
+   position from the page count but mounts only the spreads in view (plus a
+   small overscan). Node count stays bounded regardless of book length.
+2. **Correct book conventions, rendered from the engine's geometry:**
+   - **Mirrored margins.** The engine gives each `Line` an `x`/`y`/`width`
+     relative to the page's *text area* (the rectangle inside the margins)
+     and a constant column width. This EPIC places that text area on the
+     physical page per side: a **verso** (left page) carries the inner
+     (gutter) margin on its right and the outer margin on its left; a
+     **recto** (right page) mirrors it. Inner margins face each other across
+     the gutter.
+   - **Running headers.** A verso shows `runningHeader.verso`, a recto shows
+     `runningHeader.recto`, with `{title}`, `{author}`, and `{chapter}`
+     tokens resolved from the `Document`.
+   - **Folios** (page numbers), one per body page.
+   - **Suppression.** Running headers and folios are suppressed on
+     chapter-opening pages (`kind: 'opener'`) and on inserted blanks
+     (`kind: 'blank'`). Blanks render as fully empty leaves. A suppressed
+     page still consumes its folio number, so numbering downstream stays
+     correct.
+   - **Chapters open recto.** The engine already guarantees every opener
+     lands on a recto (inserting a blank verso where needed); this EPIC
+     renders that faithfully, including the empty left leaf of the very first
+     spread.
+3. **Responsive layout (mobile-first).** A single page at narrow widths
+   (usable at a 390px viewport), a facing spread at wider widths. Switching
+   modes on resize re-groups pages for display without re-paginating (page
+   geometry is unchanged; only grouping and scale change).
+4. **Designed empty, loading, and error states** for the preview surface:
+   a layout-stable skeleton spread while the engine lays out, a
+   product-voice error with a next step, and an empty state (a file that
+   produces zero pages) that names the surface's purpose and first action.
+5. **A minimal print stylesheet** that prints the on-screen preview at true
+   trim size (`@media print`), so a binder can pull one physical test spread
+   and confirm the mirrored-margin alignment. This is an alignment check
+   only, not the PDF/imposition export (EPIC 6): no imposition, no signature
+   folding, no download, no page-order remapping.
+6. **Replacement of the throwaway preview.** Delete `src/ui/EnginePreview.tsx`
+   and `src/ui/EnginePreview.test.tsx`; wire the new `BookPreview` into
+   `App.tsx` in their place. Keep the existing `load` → `paginate` flow and
+   the `__BINDERY_ENGINE_TIMINGS__` hook intact so EPIC 2's perf harness
+   still passes.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **Polished or virtualized preview UI:** facing pages, mirrored-margin
-  visuals, running-header rendering, folio rendering, header/folio
-  suppression styling, smooth-scroll virtualization. EPIC 3. The throwaway
-  preview in this EPIC is a validation surface, not the real preview.
-- **User-facing dials / controls.** No trim/font/margin/spacing UI, no
-  toggles surfaced to the user. EPIC 2 consumes a single fixed default
-  `DesignSpec` (§2.7). Building any control panel is EPIC 4.
-- **The budget solver ("Fit into N sheets").** EPIC 5. Do not build a
-  solver, a slider, or any search over the design space here.
-- **Imposition / signatures.** No fold-to-signature math, and the
-  `signatures` field from the plan's `PaginationResult` sketch is
-  intentionally omitted from this EPIC's output (§2.4). EPIC 6.
-- **PDF or any export.** EPIC 6.
-- **Flowing images into pages.** Images are already dropped from flow in
-  the EPIC 1 model; the engine lays out `heading`, `paragraph`, and `note`
-  blocks only.
-- **Any change to the parsed `Document` shape** (`src/model/document.ts`).
-  The engine reads it; it does not modify it.
-- **Persistence, project files, house-style presets.** EPIC 7.
+- **Typography / layout controls (EPIC 4).** No trim-size, font, margin,
+  spacing, header-text, or toggle UI. No dials, no settings panel, no way for
+  the user to change the design. This EPIC renders `DEFAULT_DESIGN` only.
+- **The paper-budget solver and slider (EPIC 5).** No "fit into N sheets", no
+  slider, no search over the design space, no re-pagination triggered by user
+  input.
+- **Imposition / signatures / export (EPIC 6).** No fold-to-signature math,
+  no PDF, no download, no re-ordering of pages into printer bundles. The
+  print stylesheet in §5 prints pages in reading order at true size for an
+  alignment check only.
+- **Editing the text**, re-parsing, or any change to the `Document` model
+  (`src/model/document.ts`) or the parser.
+- **Any change to the pagination engine** (`src/engine/*`): the renderer is a
+  pure consumer of `PaginationResult`, `DesignSpec`, `computeMetrics`, and
+  `units`. If the renderer appears to need a new engine field, that is a
+  signal to reconsider the render approach, not to edit the engine. (If it is
+  genuinely unavoidable, mark the run `blocked` rather than expanding scope.)
+- **Rendering images into pages.** Images are already dropped from flow by
+  EPIC 1; the engine emits only `heading`/`paragraph`/`note` text.
+- **A first-run walkthrough / guided path (EPIC 7).** Do not build the
+  onboarding tour here. This EPIC must not *regress* EPIC 1's first-run: the
+  sample still loads, and now shows a real book-shaped preview.
+- **Persistence, project files, house-style presets (EPIC 7).**
 - **Any runtime LLM.** The product has no text-generation feature.
 
 ---
 
 ## 2. Technical design
 
-### 2.1 Stack additions
-- **Web Worker (ES module).** Vite's native worker support:
-  `new Worker(new URL('./pagination.worker.ts', import.meta.url), { type: 'module' })`.
-  No worker plugin or extra config beyond this.
-- **Text measurement:** `OffscreenCanvas.getContext('2d').measureText`
-  inside the worker. The `Range`/DOM measurement path named in the planner
-  scope needs a live DOM and layout, which a worker does not have, so
-  OffscreenCanvas is the in-worker choice. A documented fallback
-  (§2.5) keeps the app working where `OffscreenCanvas` is absent.
-- **Hyphenation:** `hyphen` / Knuth-Liang patterns via the `hypher`
-  package with the `hyphenation.en-us` pattern set (both MIT, pure JS,
-  deterministic, worker-safe). Language is selected from
-  `Document.language`, falling back to en-us. This is the only new runtime
-  dependency; do not add a typesetting or layout library.
-- **tsconfig:** add `"WebWorker"` to `lib` in `tsconfig.app.json` (it
-  currently lists `ES2021`, `DOM`, `DOM.Iterable` only) so worker globals
-  and `OffscreenCanvas` type-check. Keep `strict` and the existing
-  `verbatimModuleSyntax` rule (use `import type` for type-only imports).
+### 2.1 What already exists (consume, do not change)
+- `src/engine/types.ts` — `DesignSpec`, `Page` (`index`, `side`, `kind`,
+  `chapterIndex`, `lines`), `Line` (`text`, `x`, `y`, `width`, `hyphenated`),
+  `PaginationResult` (`pageCount`, `pages`), `Timings`.
+- `src/engine/defaultDesign.ts` — `DEFAULT_DESIGN` (half-letter trim 5.5×8.5
+  in; inner 0.75, outer 0.5, top 0.6, bottom 0.7 in; opener top drop 72pt,
+  `startRecto: true`; `runningHeader.verso = '{author}'`,
+  `runningHeader.recto = '{title}'`, `showOnOpener: false`).
+- `src/engine/units.ts` — `PX_PER_IN` (96), `PX_PER_PT`, `lengthToPx`,
+  `ptToPx`, `roundPx`. Reuse these so the renderer's px basis matches the
+  engine's exactly.
+- `src/engine/paginate.ts` — `computeMetrics(design)` returns `columnPx`,
+  `lineHeightPx`, `bodyLinesPerPage`, `openerLinesPerPage`, `openerTopDropPx`,
+  `bodyStyle`, `headingStyle`; `sideForIndex(index)` (`index % 2 === 0` →
+  `'recto'`). Reuse both for consistency; do not re-derive column width.
+- `src/engine/client.ts` — `EngineClient` / `EngineClientLike`:
+  `load(doc)`, `paginate(design, handlers)`, `dispose()`. Handlers:
+  `onProgress(estimatedPageCount, firstPages, firstFeedbackMs)`,
+  `onDone(result, timings)`, `onError(message)`. It measures timings and
+  publishes `window.__BINDERY_ENGINE_TIMINGS__` on `done`. Keep using it as
+  the throwaway preview did.
+- `src/engine/engine.ts` — `FIRST_PAGES` (4): the count carried in
+  `progress.firstPages`. Enough to fill the first spread.
+- `src/engine/lineBreak.ts` — `SOFT_HYPHEN`: the char the engine inserts for
+  a soft hyphen. The renderer strips it and shows a real hyphen when
+  `line.hyphenated` (the throwaway preview's `displayText` is the pattern to
+  reuse).
 
-Keep the dependency list this short. Adding a layout/typesetting framework,
-a font-parsing library (that is EPIC 6's concern), or a state library is
-drift.
-
-### 2.2 File / module layout (new files; nothing in `src/epub` or `src/model` changes)
+### 2.2 New file / module layout (nothing in `src/engine` or `src/model` changes)
 ```
-src/engine/
-  types.ts              DesignSpec, TextStyle, PaginationResult, Page, Line, Timings
-  defaultDesign.ts      the single fixed default DesignSpec for this EPIC (§2.7)
-  units.ts              px basis constants + pt/in -> px helpers (deterministic)
-  measurer.ts           Measurer interface + SyntheticMeasurer (deterministic, for tests)
-  offscreenMeasurer.ts  OffscreenCanvas-backed Measurer (worker/browser only)
-  hyphenate.ts          hypher wrapper, language-selected, pure + memoized
-  lineBreak.ts          greedy line breaking + hyphenation over one paragraph (pure)
-  paginate.ts           lines -> pages: chapter-open, recto/blank, widow/orphan, count (pure)
-  engine.ts             streaming orchestration: (Document, DesignSpec, Measurer) -> events
-  protocol.ts           worker message types: load | paginate | progress | done | error
-  pagination.worker.ts  worker entry: holds Document, uses offscreenMeasurer, runs engine
-  client.ts             main-thread client: owns Worker, load()/paginate(), streams events
-  *.test.ts             unit tests (SyntheticMeasurer; jsdom-safe)
 src/ui/
-  EnginePreview.tsx      throwaway validation preview (bounded, loading + error, 390px)
-  EnginePreview.test.tsx
-test/fixtures/large/
-  <~150k-word>.epub      real public-domain EPUB (§2.9)
-  <~300k-word>.epub      real public-domain EPUB (§2.9)
-  PROVENANCE.md          source URLs, license, measured word counts
-e2e/pagination.spec.ts   Playwright: budgets, determinism, main-thread responsiveness
+  BookPreview.tsx        container: owns the EngineClient, drives load/paginate,
+                         holds the {laying-out | first-spread | ready | empty | error}
+                         states, and renders the virtualized viewport
+  BookPreview.test.tsx
+  bookScroller.ts        pure windowing: (spreadCount, spreadStridePx, scrollTop,
+                         viewportPx, overscan) -> { firstSpread, lastSpread, topPadPx,
+                         totalPx }. No DOM, unit-tested.
+  bookScroller.test.ts
+  spreads.ts             pure grouping: pages -> Spread[] (verso/recto pairing,
+                         leading half-spread) for spread mode; identity list for
+                         single-page mode. Unit-tested.
+  spreads.test.ts
+  pageGeometry.ts        pure: (design, side) -> PagePlacement (page px box, mirrored
+                         text-left, text-top, header/folio anchors). Reuses units +
+                         computeMetrics. Unit-tested.
+  pageGeometry.test.ts
+  runningHead.ts         pure token resolver: (template, {title, author, chapter}) ->
+                         string. Unit-tested.
+  runningHead.test.ts
+  PageView.tsx           renders one Page: mirrored margins, header, folio, lines,
+                         scaled to fit. Presentational, pure over its props.
+  Spread.tsx             renders one spread (verso + recto) or a single page row.
+src/styles.css           add facing-page + viewport styles; remove throwaway .preview* rules
+src/App.tsx              swap EnginePreview -> BookPreview (delete the throwaway files)
+e2e/preview.spec.ts      Playwright: bounded nodes while scrolling, 390px no h-scroll,
+                         mirrored margins, header/folio suppression, first-spread speed
 ```
+No new runtime dependency. React + the existing engine are sufficient; do not
+add a virtualization or windowing library (the window math is a dozen lines,
+§2.6). Do not add an animation or layout framework.
 
-### 2.3 Inputs the engine consumes
-- `Document` (read-only, from `src/model/document.ts`). The engine walks
-  `chapters[].blocks[]`, laying out only blocks with
-  `keptOrDropped === 'kept'` and `type` in `heading | paragraph | note`.
-  Dropped blocks and `image` blocks are skipped (they carry no flowable
-  text). Inline formatting is already flattened to `Block.text` by EPIC 1,
-  so a block is a single plain string.
-- `DesignSpec` (§2.7). All page geometry, font, spacing, margins, and the
-  two toggles (`widowControl`, `hyphenation`) come from here.
-
-### 2.4 Output: `PaginationResult`
-Matches the plan's data-model sketch, minus `signatures` (imposition is
-EPIC 6 and is a Non-Goal here). Keep it fully serializable (plain
-objects/arrays/strings/numbers) so it clones cheaply across `postMessage`.
+### 2.3 Page geometry (`pageGeometry.ts`, pure)
+All lengths in CSS px on the engine's basis (`units.ts`). The engine's
+`Line.x`/`Line.y` are relative to the text area; this module places that text
+area on the physical page.
 
 ```ts
-// src/engine/types.ts
-export interface Line {
-  text: string;        // the exact substring laid out on this line
-  x: number;           // left offset within the text column, in px (0 at column start)
-  y: number;           // baseline offset from the top of the text area, in px
-  width: number;       // measured advance width of `text`, in px
-  hyphenated: boolean; // true if this line ends in a soft hyphen inserted by the engine
+export interface PagePlacement {
+  pageWidthPx: number;    // lengthToPx(trim.w, unit)
+  pageHeightPx: number;   // lengthToPx(trim.h, unit)
+  textLeftPx: number;     // verso: outer margin; recto: inner margin
+  textTopPx: number;      // lengthToPx(margins.top, unit)
+  columnPx: number;       // computeMetrics(design).columnPx (constant per design)
+  textHeightPx: number;   // lengthToPx(trim.h - margins.top - margins.bottom, unit)
+  lineHeightPx: number;   // computeMetrics(design).lineHeightPx
+  fontSizePx: number;     // ptToPx(font.sizePt)
+  headingSizePx: number;  // ptToPx(font.sizePt) with bold (headings share size here)
+  // Header/folio sit on one line inside the top margin band.
+  chromeBaselinePx: number;  // y of the header/folio baseline, inside the top margin
+  folioEdge: 'left' | 'right'; // outer edge: verso -> 'left', recto -> 'right'
 }
 
-export type PageKind = 'body' | 'opener' | 'blank';
-export type PageSide = 'recto' | 'verso';
-
-export interface Page {
-  index: number;         // 0-based sequential page number
-  side: PageSide;        // recto = odd 1-based folio, verso = even
-  kind: PageKind;        // opener = a chapter starts here; blank = inserted spacer
-  chapterIndex: number;  // Chapter.order this page belongs to (-1 for a blank spacer)
-  lines: Line[];         // empty for a blank page; opener pages may reserve top space
-}
-
-export interface Timings {
-  wordCount: number;
-  pageCount: number;
-  firstFeedbackMs: number; // request dispatch -> first `progress` message on main
-  settleMs: number;        // request dispatch -> `done` message on main
-}
-
-export interface PaginationResult {
-  pageCount: number;
-  pages: Page[];
-  // `signatures` is intentionally omitted: imposition is EPIC 6.
-}
+export function pagePlacement(design: DesignSpec, side: PageSide): PagePlacement;
 ```
 
-Geometry convention: `x`/`y`/`width` are relative to the **text area** of a
-page (the rectangle inside the margins), in CSS px. The engine does **not**
-mirror margins or place the text area on the physical page. That mapping
-(inner vs outer margin, gutter side per recto/verso) is a pure rendering
-concern and belongs to EPIC 3. The engine only needs the **column width**,
-which is constant across pages for a given design (see §2.6), so mirroring
-does not affect pagination or page count.
+Rules:
+- `textLeftPx` is the mirror: `side === 'verso' ? outerPx : innerPx`, where
+  `innerPx = lengthToPx(margins.inner, unit)` and
+  `outerPx = lengthToPx(margins.outer, unit)`. `columnPx` is constant, so the
+  text block width is identical on both sides; only its left offset differs.
+- `chromeBaselinePx` sits within the top margin (e.g. `textTopPx * 0.55`),
+  above the text area, so the header never collides with body text.
+- `folioEdge` places the folio at the page's **outer** edge on the chrome
+  line (verso → left/outer, recto → right/outer); the running head is
+  centered across `columnPx`.
 
-### 2.5 Measurement (the `Measurer` seam)
-Line breaking depends on real advance widths, but jsdom has no text metrics
-and no `OffscreenCanvas`, and we must be able to unit-test the algorithm
-deterministically. So measurement is an injected interface.
+Unit test pins: for `DEFAULT_DESIGN`, `pageWidthPx === 528`,
+`pageHeightPx === 816`; verso `textLeftPx === lengthToPx(0.5,'in')` (outer),
+recto `textLeftPx === lengthToPx(0.75,'in')` (inner); both sides share the
+same `columnPx` from `computeMetrics`; `folioEdge` mirrors by side.
 
+### 2.4 Running head tokens (`runningHead.ts`, pure)
 ```ts
-// src/engine/measurer.ts
-export interface TextStyle {
-  family: string;   // CSS font-family list from the DesignSpec
-  sizePx: number;   // font size in CSS px (derived from sizePt, see units.ts)
-  // weight/style are fixed for body text in this EPIC; headings may use a
-  // bold flag. Keep the surface this small.
-  bold?: boolean;
-}
-
-export interface Measurer {
-  /** Advance width of `text` at `style`, in CSS px. Must be a pure function
-   *  of (text, style) for the lifetime of the measurer. */
-  measure(text: string, style: TextStyle): number;
-}
+export function resolveRunningHead(
+  template: string,
+  ctx: { title: string; author: string; chapter: string },
+): string;
 ```
+Replace `{title}`, `{author}`, `{chapter}` (case-sensitive, exact tokens)
+with the context values; leave unknown tokens as-is (harmless literal). An
+empty resolved string renders no header text (the chrome line still reserves
+its space so layout stays stable). `chapter` for a page is
+`orderedChapters(doc)[page.chapterIndex]?.title ?? ''`; a blank page
+(`chapterIndex === -1`) never shows a header anyway.
 
-- **`OffscreenCanvasMeasurer` (production, worker):** wraps one
-  `OffscreenCanvas(0,0).getContext('2d')`. Sets `ctx.font` from the
-  `TextStyle` and returns `ctx.measureText(text).width`. It **memoizes**
-  by `(style-key, text)` because a novel repeats most of its words; the
-  cache is what keeps the 300k-word pass inside budget. Before the first
-  measure the worker awaits `self.fonts.ready` (when `self.fonts` exists)
-  so `measureText` uses the intended family rather than a mid-load
-  fallback. Determinism holds because, within one environment, a given
-  font string yields identical metrics on every run.
-- **`SyntheticMeasurer` (tests):** a deterministic measurer with no
-  platform dependency. Width is computed from a fixed per-character advance
-  table (a default advance for unlisted characters), so tests can construct
-  exact line-fill scenarios and assert precise break points, page counts,
-  and widow/orphan behavior. This runs in jsdom.
-- **Fallback:** if `OffscreenCanvas` is unavailable in the worker, fall
-  back to an approximate average-advance measurer (a per-character width
-  table for the default family) so the app still paginates and never
-  crashes. This path is less accurate and must be logged once; the primary,
-  budget-bearing path is `OffscreenCanvasMeasurer` (the Playwright target,
-  Chromium, has `OffscreenCanvas`).
+Copy note: header text is book data (title/author/chapter), not product
+copy, so it is exempt from the copy sweep. The default templates resolve to
+the author on the verso and the title on the recto.
 
-`units.ts` fixes the px basis so every derivation is deterministic
-arithmetic: **96 px per inch, `96/72` px per point.** `sizePx = sizePt * 96/72`.
-Line advance (leading) `lineHeightPx = lineHeightPt * 96/72`. Column and
-text-area dimensions convert from the design's units the same way.
+### 2.5 Rendering one page (`PageView.tsx`)
+Presentational and pure over its props: `{ page, design, doc, scale }`.
 
-### 2.6 Line breaking, hyphenation, page assembly
-**Column width** (constant per design):
-`columnPx = (trim.w - margins.inner - margins.outer)` converted to px.
-**Text-area height:** `(trim.h - margins.top - margins.bottom)` in px.
-**Lines per page:** `floor(textAreaPx / lineHeightPx)` (integer; the same
-on every non-opener body page). An opener page reserves a fixed top drop
-(from `chapterOpening`) and therefore holds fewer lines; compute its
-capacity the same way from the reduced text area.
+- Outer element is a fixed box of `pageWidthPx × pageHeightPx`, scaled by
+  `transform: scale(var(--scale))` with `transform-origin: top left`; its
+  laid-out footprint is the scaled size (wrap in a box sized to the scaled
+  dimensions so flow/scroll math uses on-screen pixels). This keeps every
+  child positioned in true design px while the whole leaf shrinks to fit.
+- **Text area:** a positioned box at `left: textLeftPx; top: textTopPx`,
+  width `columnPx`, height `textHeightPx`, `overflow: hidden`.
+- **Lines:** for each `Line`, an absolutely-positioned element at
+  `left: line.x; top: line.y` within the text area (so the opener top-drop,
+  already baked into `line.y` by the engine, is honored), rendered at
+  `font-family: design.font.family`, `font-size: fontSizePx`
+  (`headingSizePx` + bold for a heading block if distinguishable; body size
+  is acceptable since the engine used one size), `white-space: pre`,
+  `line-height: lineHeightPx`. Reproduce the soft hyphen exactly as the
+  throwaway preview did: strip `SOFT_HYPHEN`, then append a visible `-` when
+  `line.hyphenated`. Because the engine measured against the same family and
+  size, each `Line` renders on one visual line at ≈`line.width`.
+  Baseline note: align text so its baseline sits near `line.y` (a fixed
+  line-box of `lineHeightPx` with a consistent vertical offset); uniform
+  rhythm plus correct margins is what the AC checks, not sub-pixel baseline.
+- **Chrome (header + folio):** rendered ONLY when
+  `page.kind === 'body'`. On `opener` and `blank`, render neither (the
+  space is simply empty). A body page shows:
+  - running head: `resolveRunningHead(side === 'verso' ? runningHeader.verso :
+    runningHeader.recto, ctx)`, centered across `columnPx` on the chrome line.
+  - folio: `String(page.index + 1)` at the outer edge (`folioEdge`).
+- **Blank page:** an empty leaf (a bordered/paper-colored box with no chrome
+  and no lines), so the recto-opening convention is visible in the spread.
 
-**Greedy line breaking (`lineBreak.ts`, pure, measurer-injected):** for one
-paragraph, accumulate words separated by single spaces; when the next word
-would exceed `columnPx`, end the line before it. If a single word alone
-exceeds `columnPx`, or `hyphenation` is on and a hyphenated prefix would
-better fill the line, split the word at a Knuth-Liang hyphenation point
-(`hyphenate.ts`), append a soft hyphen to the prefix, and carry the
-remainder. A word with no valid hyphenation point that still overflows is
-placed on its own line (it may exceed the column; never drop text, never
-loop). Whitespace is normalized to single spaces (EPIC 1 already
-normalized runs). `heading` and `note` blocks break the same way; a
-heading may use `bold: true` and its own size from the design.
+`PageView` never reads `pages` beyond its own `page`. It is O(lines on one
+page).
 
-**Page assembly (`paginate.ts`, pure):** walk chapters in `order`. For each
-chapter: start a new page (an `opener`), honoring the recto rule below;
-emit the chapter's heading block(s), then lay each paragraph's lines onto
-pages, filling to the per-page line capacity, opening a new `body` page
-when full. Assign each `Line` its `x` (0 for left-aligned), `y`
-(`lineIndexOnPage * lineHeightPx`, plus opener top drop), and `width`.
-`pageCount` is the number of pages emitted, including inserted blanks.
+### 2.6 Virtualized viewport (`bookScroller.ts` + `BookPreview.tsx`)
+The preview is its own vertically-scrolling viewport (a bounded-height
+scroll region, so virtualization has a stable frame and the surrounding page
+layout is undisturbed).
 
-**Chapter-opening and blank-page rules (affect page count, so they live
-here):**
-- Every chapter begins on a fresh page (`kind: 'opener'`).
-- When `chapterOpening.startRecto` is true, an opener must land on a recto
-  (odd 1-based folio). If the next page would be a verso, insert one
-  `kind: 'blank'` page first. `side` is derived from 0-based `index`
-  (`index` even -> recto folio 1,3,5...; i.e. `side = index % 2 === 0 ? 'recto' : 'verso'`;
-  fix the mapping once in code and keep it consistent).
-- Blank pages carry no lines and `chapterIndex = -1`.
+- **Spread grouping (`spreads.ts`):** in spread mode, pages pair as
+  `[verso, recto]` with the recto always on the right. Because
+  `sideForIndex(0) === 'recto'`, page 0 sits alone on the right of the first
+  spread with an **empty left leaf** (outside the book): spread 0 =
+  `[null, page0]`, spread 1 = `[page1, page2]`, spread k≥1 =
+  `[page(2k-1), page(2k)]`. In single-page mode each page is its own row, in
+  index order. Grouping is pure and derived from `pageCount`/`pages`.
+- **Windowing (`bookScroller.ts`):** every spread row has the same stride
+  (`spreadStridePx` = scaled page height + row gap; the tallest leaf sets the
+  height and all rows share it, so positions are a simple multiple). Given
+  `scrollTop` and the viewport height, compute the first and last visible
+  spread indices, add an overscan of 1–2 rows each side, and return
+  `{ firstSpread, lastSpread, topPadPx, totalPx }`. The scroll container
+  holds a spacer of `totalPx`; only spreads in `[firstSpread, lastSpread]`
+  are mounted, offset by `topPadPx` (a translate or a top pad). This is the
+  whole virtualization; no library.
+- **Scroll handling:** listen passively, read `scrollTop`, and recompute the
+  window inside a `requestAnimationFrame` (coalesce multiple scroll events
+  into one update per frame). Never touch or measure all pages on scroll.
+- **Resize / mode switch:** recompute `scale` and grouping on container
+  resize (a `ResizeObserver` on the viewport, or a matchMedia breakpoint).
+  Anchor scroll to the currently-centered page index so the reader does not
+  lose their place across a single↔spread switch. Do NOT re-paginate.
+- **Scale:** fit the leaf to the available width. Single mode:
+  `scale = min(maxScale, (availableWidthPx) / pageWidthPx)`. Spread mode:
+  `scale = min(maxScale, (availableWidthPx - gutterPx - gaps) / 2 /
+  pageWidthPx)`. Cap `maxScale` (e.g. 1.1) so the book does not balloon on a
+  wide monitor. Choose the single↔spread breakpoint so both pages stay
+  readable in spread mode (recommended: single below ~820px CSS px, spread
+  at/above); at 390px the app is in single mode with one readable page and
+  no horizontal scroll.
 
-### 2.7 The fixed default `DesignSpec` (no UI in this EPIC)
-The engine needs geometry to run; EPIC 4 builds the controls that mutate
-it. This EPIC ships one hardcoded default and no way to edit it. Concrete
-values (half-letter trim, a common home-bind size), so the build is
-executable without a decision:
+### 2.7 State machine (`BookPreview.tsx`)
+Props: `{ document, onReset, createEngine? }` (inject a fake engine in tests,
+exactly like the throwaway preview). On mount / when `document` changes:
+`engine.load(document)` then `engine.paginate(DEFAULT_DESIGN, handlers)`;
+`dispose()` on unmount.
 
-```ts
-// src/engine/types.ts
-export interface DesignSpec {
-  trim: { w: number; h: number; unit: 'in' | 'mm' };
-  font: { family: string; sizePt: number; lineHeightPt: number; bold?: boolean };
-  margins: { inner: number; outer: number; top: number; bottom: number }; // trim units
-  chapterOpening: { topDropPt: number; startRecto: boolean };
-  runningHeader: { verso: string; recto: string; showOnOpener: boolean }; // stored, not rendered here
-  widowControl: boolean;
-  hyphenation: boolean;
-}
+States:
+- `laying-out` — before the first `progress`. Render a **skeleton spread**
+  at the same dimensions the real spread will occupy (fixed leaf boxes,
+  shimmering), so the layout holds and nothing jumps.
+- `first-spread` — on `onProgress`: render the streamed `firstPages` through
+  the real spread renderer immediately (the sub-100ms paint). The viewport
+  may show just the first spread until the full result arrives.
+- `ready` — on `onDone`: swap in the full `result.pages` and enable
+  virtualized scrolling over the whole book. Optionally show the exact page
+  count as a small, quiet label (book data, swept copy).
+- `empty` — on `onDone` when `result.pageCount === 0` (a file that is all
+  front matter / boilerplate): a designed empty state naming the surface's
+  purpose and a first action (`onReset` → open another book).
+- `error` — on `onError`: a designed, product-voice error with a next step
+  (retry via `onReset`).
 
-// src/engine/defaultDesign.ts
-export const DEFAULT_DESIGN: DesignSpec = {
-  trim: { w: 5.5, h: 8.5, unit: 'in' },
-  font: { family: 'Georgia, "Times New Roman", serif', sizePt: 11, lineHeightPt: 15 },
-  margins: { inner: 0.75, outer: 0.5, top: 0.6, bottom: 0.7 },
-  chapterOpening: { topDropPt: 72, startRecto: true },
-  runningHeader: { verso: '{author}', recto: '{title}', showOnOpener: false },
-  widowControl: true,
-  hyphenation: true,
-};
-```
+The swap from `first-spread`/`progress` pages to `ready` pages must reuse the
+same spread/page components so there is no visible reflow flash, and must not
+mount the whole book (virtualization applies the moment `ready` begins).
 
-`runningHeader` is carried in the type (the model sketch names it) but is
-**not** rendered in this EPIC; EPIC 3 owns headers. The engine ignores it.
-The family is a common system serif with a generic fallback; EPIC 4/6 own
-the curated, embeddable font choices, so do not commit a font file or make
-any licensing decision here.
+### 2.8 App wiring & deletions (`App.tsx`, `styles.css`)
+- Replace `<EnginePreview document={state.document} />` with
+  `<BookPreview document={state.document} onReset={reset} />` inside the
+  `ready` branch. `StructureView` stays (EPIC 1's honest parse view); the
+  facing-page preview renders below it as the primary surface. `reset` is the
+  existing `() => setState({ status: 'empty' })`.
+- Delete `src/ui/EnginePreview.tsx` and `src/ui/EnginePreview.test.tsx`
+  (EPIC 2 declared them throwaway, replaced whole here).
+- Remove the throwaway `.preview*` rules from `styles.css` and add the
+  facing-page/viewport styles. Keep the shared design tokens and the
+  `prefers-reduced-motion` skeleton handling.
 
-### 2.8 Widow/orphan control (`widowControl`)
-Definitions used: an **orphan** is the first line of a paragraph left alone
-at the foot of a page; a **widow** is the last line of a paragraph left
-alone at the top of the next page. With `widowControl: true`, keep at least
-**two** lines of a paragraph together at every page break:
-- **Orphan:** if only one line of a starting paragraph would fit at the
-  foot of the current page, move the whole paragraph to the next page
-  (leave the foot short).
-- **Widow:** if a break would leave exactly one line to carry to the next
-  page, pull one earlier line down so at least two lines carry over.
-- **Chapter boundary:** apply the same two-line minimum to the chapter's
-  opening paragraph so a lone opening line is never stranded at the foot of
-  an opener, and a chapter's final paragraph never leaves a lone widow.
+### 2.9 Accessibility
+- The viewport is a labeled region (`role="region"`, `aria-label="Book
+  preview"`), keyboard-scrollable (`tabindex={0}`, visible focus via the
+  existing `:focus-visible` rule), so keyboard reaches the book a mouse can.
+- Provide a screen-reader summary of the settled page count (e.g. an
+  `aria-live="polite"` or sr-only text: `{n} pages`) so a non-visual user
+  learns the book's size even though only visible spreads are in the DOM.
+- Page chrome and body text are real text nodes (readable by AT). Decorative
+  leaf borders and the skeleton are `aria-hidden`. No images are flowed, so
+  no alt text is required.
+- Color contrast uses the existing tokens; the loading skeleton respects
+  `prefers-reduced-motion`.
 
-Termination and determinism are mandatory: the adjustment must be bounded
-(a paragraph is moved forward at most once per page it is considered on;
-never re-enter a page it already left). If a paragraph is shorter than the
-two-line minimum, or the page can hold fewer than two lines, take the
-plain greedy break rather than looping. With `widowControl: false` the
-engine takes the plain greedy break everywhere. The toggle must produce an
-observably different page layout on the test files (proving it is wired),
-and both settings must be deterministic.
-
-### 2.9 Streaming protocol, worker, and client
-**Message protocol (`protocol.ts`):**
-- main -> worker `{ type: 'load', requestId, document }` — sent once per
-  book. The worker keeps the `Document` in memory for subsequent
-  `paginate` calls, so a re-flow never re-transfers the book. `document`
-  crosses by structured clone.
-- main -> worker `{ type: 'paginate', requestId, design }` — the hot path.
-  Runs against the held `Document`. Repeatable and cheap to send.
-- worker -> main `{ type: 'progress', requestId, estimatedPageCount, firstPages }`
-  — the **first-feedback** message, emitted within 100ms: a cheap page-count
-  estimate (from total character count over an estimated chars-per-page)
-  plus the first fully paginated pages (enough to fill the throwaway
-  preview). Further `progress` messages may refine `estimatedPageCount` and
-  extend `firstPages` as the pass proceeds.
-- worker -> main `{ type: 'done', requestId, result, timings }` — the
-  settled exact `PaginationResult` and `Timings`.
-- worker -> main `{ type: 'error', requestId, message }` — a product-voice,
-  file-free message on failure. Never post file text in an error.
-
-**Cancellation (latest-wins):** each `paginate` carries a monotonically
-increasing `requestId`. The worker checks the current `requestId` between
-work slices and abandons a pass whose id is stale, so a burst of re-flows
-(EPIC 5's slider) collapses to the latest. The client ignores `progress`
-and `done` for superseded ids. The engine yields between slices (e.g.
-after each chapter, or every N pages) so cancellation is prompt and the
-first-feedback message can be posted before the full pass finishes.
-
-**Client (`client.ts`):** owns one worker for the app's lifetime, exposes
-`load(document)` and `paginate(design)` returning a subscription of
-streamed events, stamps `firstFeedbackMs` and `settleMs` from the dispatch
-time of each `paginate` to the first `progress` / the `done`, and exposes
-the latest `Timings` for the preview and the perf test to read (e.g. a
-`window.__BINDERY_ENGINE_TIMINGS__` hook plus a DOM readout in the
-preview). Timing is measured from `paginate` dispatch, so it isolates the
-engine from EPIC 1 parse time.
-
-### 2.10 Determinism
-Identical `Document` + identical `DesignSpec` + identical `Measurer` must
-produce a byte-identical `PaginationResult`, including an identical
-`pageCount`, on every run. Requirements:
-- No `Math.random`, no `Date.now`, no wall-clock or environment input in
-  the core (timings are metadata attached at the edge, never fed back into
-  layout).
-- Deterministic iteration only (arrays and insertion-ordered maps; no
-  iteration over unordered structures).
-- Hyphenation (Knuth-Liang) is deterministic; the hyphenation cache must
-  not change results, only speed.
-- Greedy fit comparisons must not flip on float noise. Within one
-  environment `measureText` is stable across runs, which satisfies the
-  same-environment determinism AC directly. To reduce cross-environment
-  drift and keep golden tests stable, round measured advances to a fixed
-  precision before comparison (a single rounding helper in `units.ts`).
-
-### 2.11 Named large test files (§2.2 `test/fixtures/large/`)
-The planner requires a **real** 150k-word and a **real** 300k-word EPUB
-("real" meaning genuine prose, not repeated filler that would game the
-measurement cache and misrepresent perf). No such files exist in the repo
-yet. Commit two real, redistributable, public-domain EPUBs from Standard
-Ebooks (clean EPUB3, US public domain):
-- **~150k-word class:** *Emma* by Jane Austen (about 160k words) is the
-  concrete default.
-- **~300k-word class:** *Middlemarch* by George Eliot (about 316k words) is
-  the concrete default. The ~2s settle budget binds on this file.
-
-If a chosen title's measured word count differs, the implementer records
-the **actual** counts in `PROVENANCE.md` and in `result.json`; the ~150k
-file must be at least ~150k words and the ~300k (budget-bearing) file at
-least ~300k words. `PROVENANCE.md` records source URLs, license, and
-measured word counts. Do not fetch these over the network at test time
-(that breaks offline/deterministic tests and the privacy ethos); commit
-the bytes, mirroring the existing bundled-sample pattern
-(`scripts/makeSample.mjs`, `public/sample/aesops-fables.epub`). These
-fixtures are test assets under `test/fixtures/large/`; do not ship them in
-the app bundle.
+### 2.10 Determinism / privacy
+- The renderer is pure over `(PaginationResult, DesignSpec, Document)`:
+  identical inputs produce identical DOM. No `Math.random`, no `Date.now` in
+  layout; timing readouts (if any) come from the engine's `Timings`.
+- No file text appears in any error, log, or timing hook (errors are
+  product-voice and file-free, matching the engine's protocol). No network
+  path is added; the whole surface runs on already-parsed, in-browser data.
 
 ---
 
 ## 3. Ordered task list (each maps to acceptance criteria)
 
-### T1 — Engine types, units, default design, protocol
-Create `src/engine/types.ts`, `units.ts`, `defaultDesign.ts`, `protocol.ts`.
-Add `"WebWorker"` to `tsconfig.app.json` `lib`.
-**AC:** `npm run typecheck` and `npm run lint` pass. `units.ts` converts pt
-and in to px on the fixed 96 px/in basis; a unit test pins the conversions
-and the rounding helper. `DEFAULT_DESIGN` matches §2.7.
+### T1 — Pure geometry + tokens + grouping + windowing
+Create `pageGeometry.ts`, `runningHead.ts`, `spreads.ts`, `bookScroller.ts`
+with their `*.test.ts`. All pure, jsdom-safe, no React.
+**AC:** `typecheck` + `lint` pass. `pagePlacement` mirrors `textLeftPx`
+(verso outer, recto inner) and `folioEdge` by side, and matches
+`computeMetrics().columnPx`; `DEFAULT_DESIGN` yields 528×816 px leaf.
+`resolveRunningHead` substitutes `{title}/{author}/{chapter}` and leaves
+unknown tokens intact. `spreads.ts` pairs verso/recto with the leading
+half-spread (`[null, page0]`) and gives an index list in single mode.
+`bookScroller.ts` returns a bounded `[firstSpread, lastSpread]` window with
+overscan and the correct `topPadPx`/`totalPx` for given `scrollTop`.
 
-### T2 — Measurer seam
-Implement `Measurer`, `SyntheticMeasurer`, and `OffscreenCanvasMeasurer`
-(with memoization and the `self.fonts.ready` await), plus the average-advance
-fallback.
-**AC:** `SyntheticMeasurer` is a pure deterministic function of
-(text, style), unit-tested. `OffscreenCanvasMeasurer` is covered by the
-Playwright run (jsdom cannot exercise it). The fallback is selected only
-when `OffscreenCanvas` is absent and logs once.
+### T2 — PageView (one page, mirrored margins, chrome, scaled)
+Implement `PageView.tsx` (§2.5) and `Spread.tsx` (§2.6 rendering half).
+**AC:** a verso renders its text block at the outer-margin offset and a recto
+at the inner-margin offset (inner margins face the gutter); a `body` page
+shows a running head (correct verso/recto template resolved) and a folio at
+the outer edge; an `opener` and a `blank` show neither header nor folio; a
+`blank` shows an empty leaf; the soft hyphen renders as a visible `-` only
+when `line.hyphenated`. Proven in `BookPreview.test.tsx` / a `PageView` test
+with crafted pages.
 
-### T3 — Line breaking + hyphenation
-Implement `hyphenate.ts` (hypher, language-selected, memoized) and
-`lineBreak.ts` (greedy, measurer-injected).
-**AC (SyntheticMeasurer):** words pack greedily to a set column width with
-correct break points; a word longer than the column hyphenates at a valid
-point with a soft hyphen on the prefix and the remainder carried; a word
-with no valid break sits on its own line without dropping text or looping;
-turning `hyphenation` off changes the breaks. No text is ever lost or
-duplicated across lines (a reassembly test proves line concatenation equals
-the source paragraph, ignoring inserted soft hyphens and normalized
-spaces).
+### T3 — Virtualized viewport + responsive grouping
+Implement the scroll viewport in `BookPreview.tsx` using `bookScroller.ts`
+and `spreads.ts`: bounded-height scroll region, spacer of `totalPx`, mount
+only the visible window, rAF-coalesced scroll updates, `ResizeObserver`/media
+breakpoint driving single↔spread mode and `scale`.
+**AC:** with a 300+ page result, the number of mounted page nodes stays below
+a small bound at the top, after scrolling to the middle, and after scrolling
+to the end (unit test drives `scrollTop` / the windowing hook and asserts the
+mounted count); switching between single and spread mode re-groups without
+re-calling `paginate`.
 
-### T4 — Page assembly + chapter/recto/blank rules
-Implement `paginate.ts`: lines to pages, per-page line capacity, opener top
-drop, recto-opening with blank-verso insertion, `pageCount`, and correct
-`Page` metadata (`index`, `side`, `kind`, `chapterIndex`).
-**AC (SyntheticMeasurer):** on a crafted multi-chapter document, page count
-and per-page line counts match hand-computed expectations; each chapter
-begins on an `opener`; with `startRecto` true every opener has
-`side === 'recto'` and a blank verso is inserted exactly where a chapter
-would otherwise open on a verso; blanks carry no lines and
-`chapterIndex === -1`.
+### T4 — BookPreview state machine + engine wiring
+Implement the `{laying-out | first-spread | ready | empty | error}` machine
+(§2.7): `load` + `paginate(DEFAULT_DESIGN)`, render streamed `firstPages`
+immediately, swap to the full result on `done`, handle `empty` (zero pages)
+and `error`, dispose on unmount. Injectable `createEngine` for tests.
+**AC (Vitest, fake engine mirroring `EnginePreview.test.tsx`):** the
+laying-out skeleton renders before any callback and holds layout; a
+`progress` call paints the first spread; a `done` call shows the full book
+with bounded mounted nodes; a zero-page `done` shows the empty state with its
+action; `onError` shows the product-voice error; the engine is disposed on
+unmount. Copy sweep test (no `—`/`–`, no banned vocabulary, no negative
+empty-state openers) over the surface's own strings.
 
-### T5 — Widow/orphan control
-Implement §2.8 in `paginate.ts` (or a `widowOrphan.ts` it calls). Bounded,
-terminating, toggleable.
-**AC (SyntheticMeasurer):** on crafted paragraphs positioned to strand a
-line, with `widowControl` on no page ends with a lone orphan first line and
-no page begins with a lone widow last line, at both page and chapter
-boundaries; with it off the stranded line reappears (proving the control is
-what prevents it). A pathological case (a two-line paragraph against a
-one-line remainder, repeated) terminates and is deterministic.
+### T5 — App wiring, deletions, styles
+Swap `EnginePreview` → `BookPreview` in `App.tsx`; delete the throwaway
+component and its test; replace `.preview*` CSS with facing-page/viewport
+styles; add the `@media print` true-trim stylesheet (§5 scope item, alignment
+check only).
+**AC:** `App.test.tsx` and `states.test.tsx` still pass; the ready state
+renders `StructureView` + `BookPreview`; the throwaway files are gone;
+`typecheck`/`lint`/`test` green.
 
-### T6 — Streaming engine + worker + client
-Implement `engine.ts` (slice-yielding pass emitting estimate, first pages,
-progress, done), `pagination.worker.ts` (holds the `Document`, uses
-`OffscreenCanvasMeasurer`, handles `load`/`paginate`, honors latest-wins
-cancellation), and `client.ts` (owns the worker, `load`/`paginate`,
-timing stamps, timings hook).
-**AC:** the worker paginates the held `Document` from a `design` message
-without re-sending the book. A new `paginate` supersedes an in-flight one
-(stale-id results are dropped). The client reports `firstFeedbackMs` and
-`settleMs` measured from dispatch. Proven in the Playwright run (T10);
-`engine.ts` slice/estimate logic is additionally unit-tested against a fake
-transport with the `SyntheticMeasurer`.
+### T6 — Mobile-first + accessibility pass
+Verify and, where needed, adjust: 390px single-page mode with no horizontal
+scroll, body text readable without zoom, any interactive target ≥ ~44px;
+labeled scroll region, keyboard scroll, visible focus, sr-only page-count
+summary, reduced-motion skeleton.
+**AC:** covered by the e2e 390px assertions (T7) and a jsdom a11y check
+(region label present, page-count summary present, chrome suppressed on
+opener/blank). No horizontal overflow at 390px.
 
-### T7 — Determinism guarantees
-Ensure the core has no nondeterministic inputs and assembles results in a
-stable order.
-**AC:** running `paginate` twice on the same `Document` + `DesignSpec` +
-`SyntheticMeasurer` deep-equals (identical `pageCount` and identical
-`pages`). A second determinism check in the browser (T10) confirms an
-identical page count across two runs on a large real file.
+### T7 — Playwright preview harness (`e2e/preview.spec.ts`)
+Drive the production build: import the large ~300k fixture (Middlemarch,
+already committed under `test/fixtures/large/`), enter the preview, and
+assert:
+- **Bounded nodes while scrolling:** mounted page-leaf count stays below a
+  small bound at the top, mid-scroll, and at the end of a 300+ page book.
+- **Mirrored margins:** measure the rendered text-block left offset on a
+  verso vs a recto and assert the mirror (verso outer, recto inner).
+- **Chrome + suppression:** a body page shows a header and a folio; an opener
+  and a blank show neither; chapters open recto (opener leaves have
+  `side === 'recto'`).
+- **390px:** at a 390px viewport, `document.scrollWidth <= clientWidth` (no
+  horizontal scroll) and single-page mode is active.
+- **First spread speed:** the first spread paints within the first-feedback
+  window (reuse the streamed-progress path; assert the first leaf is visible
+  well under the engine's settle time).
+**AC:** all assertions pass in Chromium; `e2e/pagination.spec.ts` (EPIC 2's
+budget/determinism harness) still passes unchanged, because the timings hook
+and the `load`→`paginate` flow are preserved.
 
-### T8 — Throwaway validation preview + app wiring
-Implement `EnginePreview.tsx` and wire it into `App.tsx`: after a
-successful parse, `load` the `Document` and `paginate` with
-`DEFAULT_DESIGN`, show a layout-stable "laying out" state, then render page
-count, the timing readout, and the first few pages as plainly laid-out
-lines. Bounded output (render only the first spread or few pages, never the
-whole book). Loading and error states in product voice; usable at 390px
-with no horizontal scroll; copy swept (§4). Explicitly provisional; EPIC 3
-replaces it.
-**AC:** loading the bundled sample (or a dropped EPUB) shows the page count
-and first laid-out pages without a blank screen; the DOM node count stays
-bounded regardless of book size; a forced engine error renders the designed
-error state, not a crash; the surface is usable at 390px. Existing EPIC 1
-tests still pass (the `empty | loading | ready | error` machine is extended,
-not broken).
-
-### T9 — Large real EPUB fixtures + provenance
-Commit the two real public-domain EPUBs under `test/fixtures/large/` and
-`PROVENANCE.md` (§2.11) with measured word counts.
-**AC:** both files parse through the existing `parseEpub` into ordered
-chapters; measured word counts are recorded and meet the ~150k / ~300k
-thresholds; `PROVENANCE.md` states source and license; the files are not
-included in the app bundle.
-
-### T10 — Perf + responsiveness + determinism harness (Playwright)
-`e2e/pagination.spec.ts`: load the app, import each large fixture via the
-file input, run the engine, read the exposed timings, and assert the
-budgets. Measure main-thread long tasks during the pass. Assert identical
-page count across two runs on the 300k file. Record the numbers.
-**AC:** on the ~300k file, `firstFeedbackMs <= 100` and
-`settleMs <= ~2000` (budget; see §8 kill condition); during the pass no
-main-thread long task exceeds the threshold (worker keeps the main thread
-responsive); two runs yield an identical page count. Numbers are recorded
-in `result.json` (and optionally a short report artifact).
+### T8 — README + copy sweep
+Update `README.md` "Right now it…" paragraph and the code-map to describe the
+live facing-page preview truthfully (no pipeline jargon). Mechanically sweep
+every user-visible string added or edited in this EPIC.
+**AC:** README describes the facing-page preview accurately and still lists
+exact run/test commands verified against the actual scripts; the sweep finds
+no `—`/`–`, no banned vocabulary, and no negative empty-state phrasing in any
+shipped string (components + this spec's example copy in §4).
 
 ---
 
-## 4. Copy (throwaway preview only; swept)
-The validation preview is minimal, but its visible strings still meet the
-bar (positive, plain, no em-dashes, no banned vocabulary, no negative
-empty-state phrasing). Reference copy, already swept, ship it or better:
-- Laying-out state: **Laying out your book**
-- Page-count readout (estimate, then exact): **About {n} pages** then
-  **{n} pages**
-- Preview error heading: **Run the layout again**
-- Preview error body: **The layout stopped before it finished. Reload the
-  book to try again.**
-- Timing readout label (validation detail): **First view {a} ms, settled
-  {b} ms**
+## 4. Copy (swept reference — ship these or better)
+The preview is a mostly wordless, book-shaped surface (the screen is the
+product). Its only product copy is the three states plus a quiet page-count
+label. All strings below are already swept (no em-dashes, no banned
+vocabulary, no negative empty-state openers):
 
-Sweep note before done: reject the characters "—" and "–", the words
-"seamlessly / effortlessly / unlock / elevate / empower / leverage / robust
-/ dive in", and negative openers ("You don't have", "No … yet", "Nothing
-here", "Unable to", "Something went wrong") in every shipped string,
-including anything added to `EnginePreview.tsx` and the error path.
+- Laying-out (sr / visually-hidden label for the skeleton):
+  **Laying out your book**
+- Page-count label (book data, quiet): **{n} pages** (and **1 page** for one).
+- Empty state (a file that produces zero pages):
+  - heading: **This file has only front matter.**
+  - body: **Open another book to see it laid out in facing pages.**
+  - action: **Open another book**
+- Error state:
+  - heading: **Show the book again**
+  - body: **The layout stopped before it finished. Open the book again to try.**
+  - action: **Open another book**
+
+Running heads and folios are book data (title, author, chapter, page number),
+not product copy.
+
+Sweep before done: reject the characters `—` and `–`, the words
+`seamlessly / effortlessly / unlock / elevate / empower / leverage / robust /
+dive in`, and negative openers (`You don't have`, `No … yet`, `Nothing …
+here`, `Unable to`, `Something went wrong`) in every shipped string,
+including anything added to `BookPreview.tsx` and the state surfaces.
 
 ---
 
 ## 5. Test plan (which automated test proves each criterion)
 
-### 5.1 Unit / integration (Vitest + jsdom, `SyntheticMeasurer`, co-located `*.test.ts`)
+### 5.1 Unit / integration (Vitest + jsdom, co-located `*.test.ts`)
 | Criterion | Test |
 |---|---|
-| Units + rounding deterministic | `units.test.ts` pins pt/in -> px and the rounding helper |
-| Greedy breaking + hyphenation, no text loss | `lineBreak.test.ts`: exact break points at a set column; hyphenate an over-long word; unbreakable word on its own line; toggle changes breaks; reassembled lines equal source |
-| Page assembly + chapter/recto/blank rules | `paginate.test.ts`: page count and per-page line counts match hand-computed; openers per chapter; recto rule inserts a blank verso exactly where needed; blank metadata correct |
-| Widow/orphan prevents stranded lines | `paginate.test.ts` (or `widowOrphan.test.ts`): no lone orphan/widow at page and chapter boundaries with control on; stranded line reappears with control off; pathological case terminates deterministically |
-| Determinism | run `paginate` twice, deep-equal result incl. `pageCount` |
-| Streaming/estimate/cancellation logic | `engine.test.ts` against a fake transport: first-feedback message carries an estimate and first pages; a superseded `requestId` is abandoned |
-| Preview states | `EnginePreview.test.tsx`: laying-out, populated, and error states render designed content; DOM output bounded; copy swept |
-| App wiring intact | existing `App.test.tsx` and state tests still pass; parse -> load -> paginate path reaches the preview |
+| Mirrored margins + folio edge by side | `pageGeometry.test.ts`: verso `textLeftPx` = outer px, recto = inner px; `columnPx` from `computeMetrics`; `folioEdge` mirrors; 528×816 leaf for `DEFAULT_DESIGN` |
+| Running-head token resolution | `runningHead.test.ts`: `{title}/{author}/{chapter}` substituted; unknown token left literal; empty result renders no text |
+| Verso/recto pairing + leading half-spread | `spreads.test.ts`: spread 0 = `[null, page0]`, then `[verso, recto]` pairs; single-mode identity list |
+| Bounded windowing math | `bookScroller.test.ts`: correct `[firstSpread, lastSpread]`, overscan, `topPadPx`, `totalPx` across `scrollTop` values; window size independent of total spread count |
+| Chrome + suppression + blank leaf | `BookPreview.test.tsx` / PageView test: header+folio on `body`; none on `opener`/`blank`; blank renders empty; soft hyphen shows `-` only when `hyphenated` |
+| Bounded mounted nodes | `BookPreview.test.tsx`: a 300+ page `done` mounts a bounded number of page leaves at top / mid / end (drive the windowing) |
+| State machine | `BookPreview.test.tsx` (fake engine): laying-out skeleton first; `progress` paints first spread; `done` shows full book; zero-page `done` shows empty state + action; `onError` shows product-voice error; dispose on unmount |
+| Responsive re-group without re-paginate | `BookPreview.test.tsx`: toggling mode does not call `engine.paginate` again |
+| a11y basics | region label present; sr-only page-count summary present; chrome suppressed on opener/blank |
+| Copy swept | `BookPreview.test.tsx`: no `—`/`–`, no banned vocabulary, no negative empty-state openers in visible text |
+| Existing suites intact | `App.test.tsx`, `states.test.tsx` still pass; ready state renders `StructureView` + `BookPreview` |
 
-### 5.2 Browser harness (Playwright, `e2e/pagination.spec.ts`, Chromium)
+### 5.2 Browser harness (Playwright, Chromium)
 | Criterion | Test |
 |---|---|
-| First feedback ≤ 100ms; 300k settles ≤ ~2s; measured/recorded | run the engine on the ~300k fixture; read exposed `Timings`; assert budgets; record numbers |
-| Runs in a Web Worker; main thread responsive | assert the worker exists and does the work; observe main-thread long tasks during the pass and assert none exceed the threshold |
-| Deterministic page count across runs | paginate the 300k fixture twice in-browser; assert identical `pageCount` |
-| Real 150k + 300k files paginate end to end | both fixtures import and produce a full `PaginationResult` with a plausible page count |
+| Bounded nodes while scrolling a 300+ page book | `e2e/preview.spec.ts`: import Middlemarch, assert mounted leaf count below a small bound at top, mid, and end after scrolling |
+| Mirrored margins (printed test spread confirms alignment) | measure verso vs recto text-block left offset and assert the mirror; the `@media print` true-trim stylesheet lets a binder confirm the physical spread |
+| Running headers + folios + suppression + recto openers | body page shows header/folio; opener/blank show neither; openers are recto |
+| Usable at 390px | at 390px, no horizontal scroll (`scrollWidth <= clientWidth`), single-page mode active, body text readable |
+| First spread within the first-feedback window | first leaf visible well under the engine settle time (streamed `firstPages` path) |
+| EPIC 2 budgets/determinism unaffected | `e2e/pagination.spec.ts` still green (timings hook + `load`/`paginate` preserved) |
 
 ### 5.3 Recorded verification (part of DONE)
-Record in `result.json` `summary` (and optionally a short report artifact):
-measured `firstFeedbackMs` and `settleMs` for the 150k and 300k files, the
-measured word counts of both fixtures, the resulting page counts, and the
-observed max main-thread long-task duration during a pass.
+Record in `result.json` `summary`: the observed mounted-leaf bound while
+scrolling the 300+ page book, confirmation of no horizontal scroll at 390px,
+and that `e2e/pagination.spec.ts` still passes.
 
 ---
 
 ## 6. Data model / migrations
-No database, no on-disk format, no persistence. All new types
-(`DesignSpec`, `PaginationResult`, `Page`, `Line`, `TextStyle`, `Timings`,
-the protocol messages) are in-memory only, so there are no migrations. The
-existing `Document`/`ImportReport` shapes in `src/model/` are consumed
-read-only and are not changed.
+No database, no persistence, no on-disk format. This EPIC adds only
+in-memory, presentational types (`PagePlacement`, `Spread`, the windowing
+result) and React components. The `Document`, `DesignSpec`, and
+`PaginationResult` shapes are consumed read-only and are not changed, so there
+are no migrations.
 
 ---
 
 ## 7. QUALITY BAR mapping (binding; budget from the start)
-- **§1 Perceived speed:** this is the EPIC. First feedback ≤ 100ms, settle
-  ≤ ~2s on 300k, both measured. The preview renders bounded output (first
-  pages only), never the whole book eagerly, so it does not jank as page
-  count grows.
-- **§2 Mobile-first:** the throwaway preview is usable at 390px, single
-  column, no horizontal scroll. (Facing pages are EPIC 3.)
-- **§3 Designed states:** the preview has a layout-stable "laying out"
-  state and a product-voice error state, both tested.
-- **§4 First-run:** out of scope here (the drop-to-export walkthrough is
-  EPIC 7). The preview must not regress EPIC 1's first-run: the sample
-  still loads and now also shows a real page count and first laid-out
-  pages, which strengthens "understand what the product does."
+- **§1 Perceived speed:** the first spread paints from the engine's streamed
+  `firstPages` inside the 100ms window; virtualization keeps scroll and any
+  result-swap O(visible spreads), so the surface never janks as page count
+  grows and EPIC 2's ~2s settle budget is not regressed. This is also the
+  differentiator (see the top of the spec).
+- **§2 Mobile-first:** single readable page at 390px, no horizontal scroll,
+  ≥44px interactive targets, spread only on wider viewports.
+- **§3 Designed states:** layout-stable skeleton spread while laying out;
+  product-voice error with a next step; a designed empty state for zero-page
+  files. All tested.
+- **§4 First-run:** the guided walkthrough is EPIC 7 and is out of scope here.
+  This EPIC must not regress EPIC 1's first-run and in fact strengthens it:
+  the sample now shows a real book-shaped preview, which is the north star's
+  "see a book worth printing before touching a setting."
 - **§5 Security hygiene:** no server, so authz/rate-limit are N/A by
-  construction. The engine runs on already-parsed, in-browser data; no
-  network path is added. No file text is placed in worker errors, timing
-  hooks, or logs (privacy / no-PII).
-- **§6 Accessibility:** the preview uses semantic structure, labeled
-  controls if any, and visible focus. No images are rendered.
-- **§7 Radically simple interface:** the preview is a bare validation
-  surface, not a second product screen. Do not add controls or chrome;
-  EPIC 3/4 own the real UI.
+  construction; no new network path; no file text in errors, logs, or hooks.
+- **§6 Accessibility:** labeled, keyboard-scrollable region with visible
+  focus; sr-only page-count summary; real text nodes for body and chrome;
+  decorative elements `aria-hidden`; contrast from existing tokens;
+  reduced-motion respected.
+- **§7 Radically simple interface:** the book IS the screen. One primary
+  surface, no controls, no chrome beyond headers/folios. Dials are EPIC 4;
+  adding any here is drift.
 - **§8 Copy that sounds human:** §4 reference copy is swept; sweep anything
-  added before done.
-- **§9 README:** no change required by this EPIC beyond keeping it accurate;
-  if the run surfaces user-facing behavior, keep the README truthful. Do
-  not add pipeline jargon.
+  added before done. Header/folio are book data, exempt.
+- **§9 README:** update the "Right now it…" paragraph and code-map to describe
+  the facing-page preview truthfully; keep run/test commands accurate; no
+  pipeline jargon.
 
-Reconciliation: meeting the bar on the throwaway preview (bounded output,
-loading/error states, 390px, swept copy) is in scope. Polishing it beyond
-that (facing pages, virtualization, headers, animations) is EPIC 3's work
-and would be drift here.
+Reconciliation: meeting the bar on the preview (virtualized bounded output,
+designed states, 390px, a11y, swept copy) is in scope. Going past it
+(typography dials, the slider, export, print-ready imposition, decorative
+animation) is a later EPIC's work and would be drift here.
 
 ---
 
 ## 8. Definition of done
-- All ten tasks' ACs met; every planner acceptance criterion below maps to
+- All eight tasks' ACs met; every planner acceptance criterion (below) maps to
   a passing test or a recorded §5.3 measurement.
-- `lint`, `typecheck`, `test` (Vitest) and the Playwright harness are green.
-- The engine runs in a Web Worker; the main thread stays responsive during
-  a full pass (measured).
-- Results are deterministic (identical input + design -> identical page
-  count and pages).
-- Widow/orphan control demonstrably prevents stranded lines at page and
-  chapter boundaries on the test files, and is toggleable.
-- Copy swept; preview states designed and tested; 390px verified.
-- Measured `firstFeedbackMs`, `settleMs`, word counts, and page counts are
-  recorded in `result.json`.
-
-**Kill condition (from the validation, binding):** if first feedback
-exceeds 100ms, or the settle time exceeds ~2s on the ~300k-word file, this
-EPIC is **failed**, not degraded. Do not fake the budget by downsampling,
-capping content, estimating instead of paginating, or skipping widow/orphan
-work. If the budget cannot be met, set `outcome: "failure"` and report the
-measured numbers so the owner sees the real signal.
+- `lint`, `typecheck`, `test` (Vitest) and both Playwright specs
+  (`preview.spec.ts` new, `pagination.spec.ts` unchanged) are green.
+- A 300+ page book scrolls with a bounded number of mounted page leaves; the
+  renderer is O(visible spreads) on mount, scroll, and result-swap.
+- Margins mirror correctly (inner margin on the gutter side), verified by the
+  geometry test and the rendered-offset e2e assertion; the `@media print`
+  stylesheet prints a true-trim spread for a physical alignment check.
+- Running headers and folios are correct with suppression on openers and
+  blanks; chapters open recto.
+- Usable at 390px: no horizontal scroll, ≥44px targets, readable text.
+- Empty, loading, and error states are designed and tested; copy swept.
+- The throwaway `EnginePreview` is deleted and replaced by `BookPreview`;
+  EPIC 2's engine, client, and timings hook are unchanged.
 
 ### Planner AC → coverage
-1. *Paginates real 150k + 300k EPUBs (named files); first page-count and
-   preview feedback ≤ 100ms; 300k settles ≤ ~2s, measured and recorded* →
-   T6, T8, T9, T10; §5.2 rows 1 and 4; §5.3.
-2. *Runs in a Web Worker; main thread stays responsive, no long-task jank*
-   → T6; §5.2 row 2.
-3. *Deterministic: identical input and settings -> identical page count
-   across runs* → T7; §5.1 determinism row; §5.2 row 3.
-4. *Widow/orphan control demonstrably prevents single stranded lines at
-   page and chapter boundaries on the test files* → T5; §5.1 widow/orphan
-   row.
-5. *Failing the 100ms or ~2s budget on the 300k file fails the EPIC (kill
-   condition), not degraded* → §8 kill condition; T10 asserts the budgets
-   and the run reports failure rather than degrading if unmet.
+1. *A 300-page book scrolls smoothly with only visible spreads in the DOM
+   (bounded node count while scrolling)* → T3, T7; §5.1 bounded-nodes row;
+   §5.2 row 1; §5.3.
+2. *Margins mirror correctly (inner margin on the gutter side); a printed
+   test spread confirms alignment* → T1, T2, T5 (print CSS), T7; §5.1
+   geometry row; §5.2 row 2.
+3. *Running headers and folios are correct, including suppression on
+   chapter-opening and blank pages; chapters open recto* → T1, T2, T7; §5.1
+   token + chrome rows; §5.2 row 3.
+4. *Fully usable at 390px: no horizontal scroll, ~44px targets, text readable
+   without zoom* → T3, T6, T7; §5.2 row 4.
+5. *Empty state names the screen's purpose and first action; loading holds
+   layout; error speaks in the product voice with a next step* → T4; §5.1
+   state-machine + copy rows.

@@ -368,60 +368,86 @@ body {
   white-space: nowrap;
 }
 
-/* --- Engine preview (throwaway validation surface) --- */
+/* --- Facing-page preview --- */
 .preview {
   margin-top: 2rem;
   padding-top: 1.5rem;
   border-top: 1px solid var(--line);
 }
 
-.preview__top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-}
-
-.preview__heading {
-  font-size: 1.15rem;
-  margin: 0 0 0.75rem;
-}
-
-.preview__timing {
-  margin: 0 0 0.75rem;
-  font-size: 0.82rem;
+.preview__count {
+  margin: 0 0 0.6rem;
+  min-height: 1.2em;
+  font-size: 0.85rem;
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
 
-.preview__panel {
+.preview__heading {
+  font-size: 1.2rem;
+  margin: 0 0 0.5rem;
+}
+
+.preview__state {
   margin-top: 0.5rem;
 }
 
-.preview__pages {
+/* The book is its own bounded, scrollable viewport so virtualization has a
+   stable frame and the surrounding page layout is undisturbed. */
+.book {
+  height: clamp(360px, 76vh, 900px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: color-mix(in srgb, var(--ink) 4%, var(--bg));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem 0.5rem;
+}
+
+.book__spacer {
+  position: relative;
+}
+
+.book__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  align-items: center;
+  gap: 24px;
 }
 
-.preview__page {
+.spread {
+  display: flex;
+  flex-direction: row;
+  gap: 16px;
+  justify-content: center;
+}
+
+.leaf {
+  position: relative;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.leaf__page {
+  position: absolute;
+  top: 0;
+  left: 0;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 1.1rem 1.2rem;
-  min-height: 4rem;
   box-shadow: var(--shadow);
+  color: var(--ink);
 }
 
-.preview__page[data-kind="blank"]::after {
-  content: "";
-  display: block;
-  min-height: 2rem;
+/* The empty leaf outside the book (left of the first spread). */
+.leaf--outside {
+  background: transparent;
 }
 
-.preview__page--skeleton {
-  min-height: 9rem;
+.leaf--skeleton {
   background: linear-gradient(
     90deg,
     var(--line),
@@ -430,20 +456,91 @@ body {
   );
   background-size: 200% 100%;
   animation: shimmer 1.3s ease-in-out infinite;
-  border: none;
+  border-radius: 2px;
 }
 
-.preview__line {
-  font-size: 0.9rem;
-  line-height: 1.5;
-  white-space: nowrap;
+.leaf__chrome {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
+.leaf__folio {
+  position: absolute;
+  font-variant-numeric: tabular-nums;
+}
+
+.leaf__folio--left {
+  left: 0;
+}
+
+.leaf__folio--right {
+  right: 0;
+}
+
+.leaf__text {
+  position: absolute;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+.leaf__line {
+  position: absolute;
+  margin: 0;
+  white-space: pre;
+  color: var(--ink);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .preview__page--skeleton {
+  .leaf--skeleton {
     animation: none;
+  }
+}
+
+/* Print one physical test spread at true trim size, so a binder can confirm
+   the mirrored-margin alignment. This is an alignment check only, not the
+   imposition export. */
+@media print {
+  .app__header,
+  .structure,
+  .preview__count {
+    display: none;
+  }
+  .preview {
+    margin: 0;
+    padding: 0;
+    border: none;
+  }
+  .book {
+    height: auto !important;
+    overflow: visible !important;
+    border: none;
+    background: none;
+    padding: 0;
+  }
+  .book__spacer {
+    height: auto !important;
+  }
+  .book__window {
+    position: static !important;
+    transform: none !important;
+    gap: 0;
+  }
+  .leaf {
+    width: auto !important;
+    height: auto !important;
+    overflow: visible !important;
+    page-break-after: always;
+  }
+  .leaf__page {
+    position: static !important;
+    transform: none !important;
+    box-shadow: none;
+    border: none;
   }
 }
 
