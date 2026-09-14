@@ -5,12 +5,13 @@ your browser. Drop in the EPUB that your fan archive or ebook library
 exports and The Bindery Desk reads it into a clean book structure: title,
 author, and chapters in reading order. Your file never leaves your computer.
 
-Right now it imports and parses an EPUB, then lays the whole book out into
-pages and shows the page count with the first laid-out pages. The layout
-runs in a background worker, so even a 300,000-word novel paginates in about
-a second and a half while the page stays responsive. The polished
-facing-page preview, typography dials, the paper-budget slider, and PDF
-export arrive in later milestones.
+Right now it imports and parses an EPUB, then lays the whole book out and
+shows it as a real book: facing pages with mirrored margins, running headers,
+page numbers, and chapters that open on the right. The layout runs in a
+background worker, so even a 300,000-word novel lays out in about a second and
+a half, and the preview only ever mounts the spreads you can see, so it stays
+smooth however long the book. Typography dials, the paper-budget slider, and
+PDF export arrive in later milestones.
 
 ## Your file stays on your computer
 
@@ -97,7 +98,7 @@ src/
   model/         in-memory book model (Document, Chapter, Block) + import report
   epub/          the EPUB parser: unzip, container, OPF, TOC, chapters, XHTML
   engine/        the pagination engine: line breaking, hyphenation, page assembly, worker
-  ui/            import surface and designed empty / loading / error / structure states
+  ui/            import states, structure view, and the virtualized facing-page preview
   integrations/  Sentry and Umami, both runtime-gated and privacy-safe
   config/        runtime config read from window.__BINDERY_CONFIG__
   sample/        one-tap loader for the bundled sample book
