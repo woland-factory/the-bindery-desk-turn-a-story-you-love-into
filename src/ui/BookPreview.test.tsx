@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, render, screen, fireEvent, within } from "@testing-library/react";
 import { BookPreview } from "./BookPreview";
-import type { EngineClientLike, PaginateHandlers } from "../engine/client";
+import type { EngineClientLike, PaginateHandlers, SolveRequest } from "../engine/client";
 import type { Document } from "../model/document";
 import type { DesignSpec, Page, PageKind, PageSide, PaginationResult, Timings } from "../engine/types";
 import { DEFAULT_DESIGN } from "../engine/defaultDesign";
+import { DEFAULT_BOUNDS, type PassStats, type SolveOutcome } from "../engine/budget";
 import { applyFontSize, applyHeader } from "./design/designPatch";
 
 const document: Document = {
@@ -33,11 +34,16 @@ function fakeEngine() {
   let paginateCalls = 0;
   const designs: DesignSpec[] = [];
   const warmedIds: string[][] = [];
+  const solveRequests: SolveRequest[] = [];
   const engine: EngineClientLike = {
     load: vi.fn(),
     paginate: (design, h) => {
       paginateCalls++;
       designs.push(design);
+      handlers = h;
+    },
+    solve: (request, h) => {
+      solveRequests.push(request);
       handlers = h;
     },
     warmFonts: (ids) => warmedIds.push(ids),
@@ -54,8 +60,12 @@ function fakeEngine() {
     get warmedIds() {
       return warmedIds;
     },
+    get solveRequests() {
+      return solveRequests;
+    },
     progress: (pages: Page[]) => act(() => handlers?.onProgress?.(pages.length, pages, 40)),
-    done: (result: PaginationResult) => act(() => handlers?.onDone?.(result, timings)),
+    done: (result: PaginationResult, stats?: PassStats, solve?: SolveOutcome) =>
+      act(() => handlers?.onDone?.(result, timings, stats, solve)),
     error: () => act(() => handlers?.onError?.("boom")),
     dispose: engine.dispose,
   };
@@ -196,6 +206,123 @@ describe("BookPreview live re-flow", () => {
     rerender(<BookPreview document={document} design={curated} onReset={() => {}} createEngine={f.create} />);
     await settleReflow();
     expect(f.warmedIds.flat()).toContain("eb-garamond");
+  });
+});
+
+describe("BookPreview paper-budget solve", () => {
+  const budget = (target: number, seq: number) => ({
+    target,
+    base: DEFAULT_DESIGN,
+    bounds: DEFAULT_BOUNDS,
+    seq,
+  });
+  const solveStats: PassStats = { totalLines: 90, openerPages: 1, blankPages: 0 };
+  const winner = applyFontSize(DEFAULT_DESIGN, 9.5);
+  const outcome: SolveOutcome = {
+    targetSheets: 2,
+    sheets: 2,
+    design: winner,
+    achieved: "hit",
+    passes: 1,
+  };
+
+  it("debounces seq bumps into one solve carrying target, base, and bounds", async () => {
+    const f = fakeEngine();
+    const { rerender } = render(
+      <BookPreview document={document} design={DEFAULT_DESIGN} onReset={() => {}} createEngine={f.create} />,
+    );
+    f.done({ pageCount: 8, pages: Array.from({ length: 8 }, (_, i) => page(i, ["a line"])) });
+
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        budget={budget(40, 1)}
+        createEngine={f.create}
+      />,
+    );
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        budget={budget(42, 2)}
+        createEngine={f.create}
+      />,
+    );
+    await settleReflow();
+
+    // One request (the debounce coalesced the drag), the latest target wins.
+    expect(f.solveRequests).toEqual([
+      { targetSheets: 42, base: DEFAULT_DESIGN, bounds: DEFAULT_BOUNDS },
+    ]);
+    // The mounted book stays up with the busy affordance during the solve.
+    expect(screen.getAllByTestId("page-leaf").length).toBeGreaterThan(0);
+    expect(screen.getByRole("region", { name: "Book preview" })).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("commits a solve done as the winner design and never re-paginates it", async () => {
+    const f = fakeEngine();
+    const outcomes: SolveOutcome[] = [];
+    const settled: { design: DesignSpec; pageCount: number; stats: PassStats }[] = [];
+    const { rerender } = render(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        onSolveOutcome={(o) => outcomes.push(o)}
+        onSettled={(s) => settled.push(s)}
+        createEngine={f.create}
+      />,
+    );
+    f.done({ pageCount: 8, pages: Array.from({ length: 8 }, (_, i) => page(i, ["a line"])) });
+    // onSettled fires for a plain paginate too, with stats derived if absent.
+    expect(settled).toHaveLength(1);
+    expect(settled[0].pageCount).toBe(8);
+    expect(settled[0].stats.totalLines).toBe(8);
+
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        budget={budget(2, 1)}
+        onSolveOutcome={(o) => outcomes.push(o)}
+        onSettled={(s) => settled.push(s)}
+        createEngine={f.create}
+      />,
+    );
+    await settleReflow();
+    f.done(
+      { pageCount: 6, pages: Array.from({ length: 6 }, (_, i) => page(i, ["solved line"])) },
+      solveStats,
+      outcome,
+    );
+
+    // The outcome reached Studio as the same object the worker sent.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toBe(outcome);
+    expect(settled).toHaveLength(2);
+    expect(settled[1]).toEqual({ design: winner, pageCount: 6, stats: solveStats });
+    expect(screen.getByText("6 pages")).toBeInTheDocument();
+
+    // Studio hands the winner design back as the design prop: no re-paginate.
+    const paginatesBefore = f.paginateCalls;
+    rerender(
+      <BookPreview
+        document={document}
+        design={outcomes[0].design}
+        onReset={() => {}}
+        budget={budget(2, 1)}
+        onSolveOutcome={(o) => outcomes.push(o)}
+        onSettled={(s) => settled.push(s)}
+        createEngine={f.create}
+      />,
+    );
+    await settleReflow();
+    expect(f.paginateCalls).toBe(paginatesBefore);
+    expect(f.solveRequests).toHaveLength(1);
   });
 });
 

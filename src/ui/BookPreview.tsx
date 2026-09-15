@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from "react";
 import type { Document } from "../model/document";
 import type { DesignSpec, Page, PaginationResult } from "../engine/types";
-import { EngineClient, type EngineClientLike } from "../engine/client";
+import { EngineClient, type EngineClientLike, type PaginateHandlers } from "../engine/client";
+import { statsForResult, type BudgetBounds, type PassStats, type SolveOutcome } from "../engine/budget";
 import { entryForStack } from "../fonts/catalog";
 import { affectsPagination } from "./design/designPatch";
 import { pagePlacement } from "./pageGeometry";
@@ -42,10 +43,31 @@ type PreviewState =
   | { status: "empty" }
   | { status: "error" };
 
+/** One committed slider target; a bumped `seq` requests a fresh solve. */
+export interface BudgetRequest {
+  target: number;
+  base: DesignSpec;
+  bounds: BudgetBounds;
+  seq: number;
+}
+
+/** What the latest settled pass (paginate or solve) laid out. */
+export interface SettledPass {
+  design: DesignSpec;
+  pageCount: number;
+  stats: PassStats;
+}
+
 interface Props {
   document: Document;
   design: DesignSpec;
   onReset: () => void;
+  /** The pending paper-budget request, or null when no solve is asked for. */
+  budget?: BudgetRequest | null;
+  /** Fired with the solver's report; its `design` becomes the working design. */
+  onSolveOutcome?: (outcome: SolveOutcome) => void;
+  /** Fired on every settled pass, paginate or solve. */
+  onSettled?: (settled: SettledPass) => void;
   /** Injectable for tests; defaults to a real worker-backed client. */
   createEngine?: () => EngineClientLike | null;
 }
@@ -59,7 +81,15 @@ function defaultCreateEngine(): EngineClientLike | null {
   }
 }
 
-export function BookPreview({ document, design, onReset, createEngine = defaultCreateEngine }: Props) {
+export function BookPreview({
+  document,
+  design,
+  onReset,
+  budget = null,
+  onSolveOutcome,
+  onSettled,
+  createEngine = defaultCreateEngine,
+}: Props) {
   const [state, setState] = useState<PreviewState>({ status: "laying-out" });
   const [scrollTop, setScrollTop] = useState(0);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -97,20 +127,31 @@ export function BookPreview({ document, design, onReset, createEngine = defaultC
   const scale = fitScale(mode, availWidth, leaf.pageWidthPx);
   const stridePx = leaf.pageHeightPx * scale + ROW_GAP_PX;
 
-  const startPaginate = useCallback((engine: EngineClientLike, target: DesignSpec) => {
-    // Pre-warm a curated face in the worker; the system serif is embeddable:
-    // false, so the default path posts nothing and stays untouched.
-    const entry = entryForStack(target.font.family);
-    if (entry?.embeddable) engine.warmFonts?.([entry.id]);
+  // Latest callbacks without re-keying the engine effects on their identity.
+  const onSolveOutcomeRef = useRef(onSolveOutcome);
+  onSolveOutcomeRef.current = onSolveOutcome;
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
 
-    engine.paginate(target, {
+  // One handler set for paginate and solve, so a solve's result flows through
+  // the exact same progress/done path: mounted book kept during the pass,
+  // scroll anchored across the swap, empty and error states unchanged.
+  // `target` is the design being laid out (a solve's winner overrides it).
+  const handlersFor = useCallback((target: DesignSpec): PaginateHandlers => {
+    return {
       onProgress: (_estimate, firstPages) =>
         setState((prev) =>
           // Keep a settled book mounted during a re-flow; only paint the first
           // spread when there is nothing yet.
           prev.status === "ready" ? prev : { status: "first-spread", pages: firstPages, design: target },
         ),
-      onDone: (result) => {
+      onDone: (result, _timings, stats, solve) => {
+        const applied = solve ? solve.design : target;
+        if (solve) {
+          // Pre-commit the winner so Studio's setDesign(solve.design) is seen
+          // as already-paginated (object identity), never re-paginated.
+          committedRef.current = applied;
+        }
         if (result.pageCount === 0) {
           setState({ status: "empty" });
           return;
@@ -120,11 +161,29 @@ export function BookPreview({ document, design, onReset, createEngine = defaultC
           const max = Math.max(0, el.scrollHeight - el.clientHeight);
           anchorRef.current = max > 0 ? el.scrollTop / max : 0;
         }
-        setState({ status: "ready", result, design: target, reflowing: false });
+        setState({ status: "ready", result, design: applied, reflowing: false });
+        onSettledRef.current?.({
+          design: applied,
+          pageCount: result.pageCount,
+          stats: stats ?? statsForResult(result),
+        });
+        if (solve) onSolveOutcomeRef.current?.(solve);
       },
       onError: () => setState({ status: "error" }),
-    });
+    };
   }, []);
+
+  const startPaginate = useCallback(
+    (engine: EngineClientLike, target: DesignSpec) => {
+      // Pre-warm a curated face in the worker; the system serif is embeddable:
+      // false, so the default path posts nothing and stays untouched.
+      const entry = entryForStack(target.font.family);
+      if (entry?.embeddable) engine.warmFonts?.([entry.id]);
+
+      engine.paginate(target, handlersFor(target));
+    },
+    [handlersFor],
+  );
 
   // Engine lifecycle: keyed on the document only, so a design change never
   // recreates the engine. Creates it, loads the book once, kicks off the first
@@ -171,6 +230,27 @@ export function BookPreview({ document, design, onReset, createEngine = defaultC
     const timer = setTimeout(() => startPaginate(engine, design), REFLOW_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [design, startPaginate]);
+
+  // A committed slider target: run the solve through the same debounce and
+  // re-flow affordance as a dial change. Keyed on the request's seq so a drag
+  // stream coalesces here and supersedes itself in the client and worker.
+  const budgetSeq = budget?.seq;
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine?.solve || budget == null) return;
+    setState((s) => (s.status === "ready" ? { ...s, reflowing: true } : s));
+    const timer = setTimeout(
+      () =>
+        engine.solve?.(
+          { targetSheets: budget.target, base: budget.base, bounds: budget.bounds },
+          handlersFor(budget.base),
+        ),
+      REFLOW_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+    // `budget` changes identity only when seq bumps; handlersFor is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budgetSeq, handlersFor]);
 
   const onScroll = useCallback(() => {
     if (rafRef.current != null) return;
