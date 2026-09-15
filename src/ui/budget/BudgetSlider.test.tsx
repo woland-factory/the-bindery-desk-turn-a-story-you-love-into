@@ -1,10 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { useState } from "react";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { BudgetSlider, readoutText, type Readout } from "./BudgetSlider";
+import { BudgetSlider, type Readout } from "./BudgetSlider";
 import { DEFAULT_BOUNDS, type BudgetBounds } from "../../engine/budget";
 
 const noop = () => {};
+
+/** Open the Bounds disclosure the way a browser toggle does. */
+function openBounds(container: HTMLElement) {
+  const details = container.querySelector("details") as HTMLDetailsElement;
+  details.open = true;
+  fireEvent(details, new Event("toggle"));
+}
 
 function renderSlider(overrides: Partial<Parameters<typeof BudgetSlider>[0]> = {}) {
   return render(
@@ -113,7 +120,8 @@ describe("BudgetSlider readout", () => {
   });
 
   it("pluralizes a single sheet and signature", () => {
-    expect(readoutText({ kind: "settled", sheets: 1 })).toBe("1 sheet · 1 signature of 4 sheets");
+    renderSlider({ readout: { kind: "settled", sheets: 1 }, min: 1, max: 2, value: 1 });
+    expect(screen.getByText("1 sheet · 1 signature of 4 sheets")).toBeInTheDocument();
   });
 });
 
@@ -121,6 +129,7 @@ describe("BudgetSlider bounds", () => {
   it("shows six labeled inputs inside the Bounds disclosure", () => {
     const { container } = renderSlider();
     expect(container.querySelector("details > summary")).toHaveTextContent("Bounds");
+    openBounds(container);
     for (const label of [
       "Font size min (pt)",
       "Font size max (pt)",
@@ -135,21 +144,24 @@ describe("BudgetSlider bounds", () => {
 
   it("clamps an edit to the rails before emitting", () => {
     const onBounds = vi.fn();
-    renderSlider({ onBounds });
+    const { container } = renderSlider({ onBounds });
+    openBounds(container);
     fireEvent.change(screen.getByLabelText("Font size min (pt)"), { target: { value: "2" } });
     expect(onBounds).toHaveBeenCalledWith({ ...DEFAULT_BOUNDS, fontMinPt: 7 });
   });
 
   it("resolves a crossed pair by raising the max", () => {
     const onBounds = vi.fn();
-    renderSlider({ onBounds });
+    const { container } = renderSlider({ onBounds });
+    openBounds(container);
     fireEvent.change(screen.getByLabelText("Font size min (pt)"), { target: { value: "15" } });
     expect(onBounds).toHaveBeenCalledWith({ ...DEFAULT_BOUNDS, fontMinPt: 15, fontMaxPt: 15 });
   });
 
   it("never emits values outside the rails across a sweep of junk edits", () => {
     const received: BudgetBounds[] = [];
-    renderSlider({ onBounds: (b) => received.push(b) });
+    const { container } = renderSlider({ onBounds: (b) => received.push(b) });
+    openBounds(container);
     const edits: [string, string][] = [
       ["Font size max (pt)", "99"],
       ["Line spacing min", "0.1"],
@@ -186,6 +198,7 @@ describe("BudgetSlider copy sweep", () => {
     ];
     for (const readout of readouts) {
       const { container, unmount } = renderSlider({ readout });
+      openBounds(container); // sweep the bound labels too
       const text = container.textContent ?? "";
       expect(text).not.toMatch(/[—–]/);
       expect(text).not.toMatch(

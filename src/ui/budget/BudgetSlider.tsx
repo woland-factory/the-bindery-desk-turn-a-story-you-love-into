@@ -53,7 +53,7 @@ function signaturesLabel(n: number): string {
   return n === 1 ? "1 signature of 4 sheets" : `${n} signatures of 4 sheets`;
 }
 
-export function readoutText(readout: Readout): string {
+function readoutText(readout: Readout): string {
   switch (readout.kind) {
     case "waiting":
       return "Laying out your book";
@@ -84,6 +84,9 @@ export function BudgetSlider({
   // A very small book can collapse the range to one value; keep the readout,
   // quiet the slider.
   const sliderDisabled = disabled || min >= max;
+  // The six bound fields mount only while the disclosure is open, so the
+  // closed state stays as light as it looks.
+  const [boundsOpen, setBoundsOpen] = useState(false);
 
   const commitBound = (patch: Partial<BudgetBounds>) => {
     onBounds(clampBounds({ ...bounds, ...patch }));
@@ -116,8 +119,12 @@ export function BudgetSlider({
         {readoutText(readout)}
       </p>
 
-      <details className="budget__bounds">
+      <details
+        className="budget__bounds"
+        onToggle={(e) => setBoundsOpen((e.target as HTMLDetailsElement).open)}
+      >
         <summary>Bounds</summary>
+        {boundsOpen && (
         <fieldset className="budget__fields">
           <legend className="visually-hidden">Bounds</legend>
           <div className="field-row">
@@ -181,6 +188,7 @@ export function BudgetSlider({
             />
           </div>
         </fieldset>
+        )}
       </details>
     </section>
   );

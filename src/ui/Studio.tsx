@@ -1,43 +1,80 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Document } from "../model/document";
 import type { ImportReport } from "../model/importReport";
 import type { DesignSpec } from "../engine/types";
 import { DEFAULT_DESIGN } from "../engine/defaultDesign";
+import type { EngineClientLike } from "../engine/client";
+import {
+  ladderCandidates,
+  predictPages,
+  sheetsForPages,
+  type BudgetBounds,
+  type SolveOutcome,
+} from "../engine/budget";
 import { warmCatalog } from "../fonts/loadFonts";
 import { ControlPanel } from "./ControlPanel";
-import { BookPreview } from "./BookPreview";
+import { BookPreview, type BudgetRequest, type SettledPass } from "./BookPreview";
 import { StructureView } from "./StructureView";
 import { loadDesign, saveDesign } from "./design/persistDesign";
+import { BudgetSlider, type Readout } from "./budget/BudgetSlider";
+import { loadBounds, saveBounds } from "./budget/persistBudget";
 
 // The studio owns the working design: it restores the persisted design on
 // mount, feeds it live to the preview, persists every change (debounced), and
-// warms the curated faces off the critical path. It lays out the control panel
-// beside the preview and keeps the honest parse view as a subordinate section.
+// warms the curated faces off the critical path. The paper-budget slider sits
+// at the top of the control column; its solver outcomes become the working
+// design, while `budgetBase` snapshots the last MANUAL design so repeated
+// solves scale margins from the binder's own numbers, never compounding.
 
 interface Props {
   document: Document;
   report: ImportReport;
   /** App-level reset (open another book). Distinct from resetting the design. */
   onReset: () => void;
+  /** Injectable for tests; forwarded to the preview. */
+  createEngine?: () => EngineClientLike | null;
 }
 
 const SAVE_DEBOUNCE_MS = 250;
 
-export function Studio({ document, report, onReset }: Props) {
+export function Studio({ document, report, onReset, createEngine }: Props) {
   const [design, setDesign] = useState<DesignSpec>(() => loadDesign());
+  const [bounds, setBounds] = useState(() => loadBounds());
+  // The design as of the last manual change (dial edit, Reset, initial load).
+  // Solver outcomes never move it, so margin percentages stay anchored to the
+  // binder's own margins across repeated solves.
+  const [budgetBase, setBudgetBase] = useState<DesignSpec>(design);
+  const [settled, setSettled] = useState<SettledPass | null>(null);
+  const [budgetRequest, setBudgetRequest] = useState<BudgetRequest | null>(null);
+  const [outcome, setOutcome] = useState<SolveOutcome | null>(null);
+  const [solving, setSolving] = useState(false);
+  // The thumb's live value while a drag's solve is still in flight.
+  const [target, setTarget] = useState<number | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seqRef = useRef(0);
 
   const persist = useCallback((next: DesignSpec) => {
     if (saveTimer.current != null) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => saveDesign(next), SAVE_DEBOUNCE_MS);
   }, []);
 
+  const clearSolveDisplay = useCallback(() => {
+    setBudgetRequest(null);
+    setOutcome(null);
+    setSolving(false);
+    setTarget(null);
+  }, []);
+
   const onChange = useCallback(
     (next: DesignSpec) => {
       setDesign(next);
       persist(next);
+      // A manual dial change takes over: it becomes the new solve base and
+      // any in-flight solve is superseded by the re-paginate it triggers.
+      setBudgetBase(next);
+      clearSolveDisplay();
     },
-    [persist],
+    [persist, clearSolveDisplay],
   );
 
   const onResetDesign = useCallback(() => {
@@ -47,6 +84,43 @@ export function Studio({ document, report, onReset }: Props) {
     if (saveTimer.current != null) clearTimeout(saveTimer.current);
     setDesign(DEFAULT_DESIGN);
     saveDesign(DEFAULT_DESIGN);
+    setBudgetBase(DEFAULT_DESIGN);
+    clearSolveDisplay();
+  }, [clearSolveDisplay]);
+
+  const onTarget = useCallback(
+    (sheets: number) => {
+      setTarget(sheets);
+      setSolving(true);
+      setOutcome(null);
+      seqRef.current += 1;
+      setBudgetRequest({ target: sheets, base: budgetBase, bounds, seq: seqRef.current });
+    },
+    [budgetBase, bounds],
+  );
+
+  const onSolveOutcome = useCallback(
+    (next: SolveOutcome) => {
+      // The winner design object flows through unchanged, so the preview
+      // recognizes it as already laid out and the dials move to match it.
+      setDesign(next.design);
+      persist(next.design);
+      setOutcome(next);
+      setSolving(false);
+      setTarget(null);
+    },
+    [persist],
+  );
+
+  const onSettled = useCallback((pass: SettledPass) => {
+    setSettled(pass);
+  }, []);
+
+  const onBounds = useCallback((next: BudgetBounds) => {
+    // Already clamped by the slider surface; persist and re-derive the range.
+    // Bounds never touch the design or trigger a solve by themselves.
+    setBounds(next);
+    saveBounds(next);
   }, []);
 
   const warmFonts = useCallback(() => {
@@ -72,16 +146,65 @@ export function Studio({ document, report, onReset }: Props) {
     [],
   );
 
+  const settledSheets = settled ? sheetsForPages(settled.pageCount) : null;
+
+  // Drag range: predicted sheets at the ladder's ends, widened to include the
+  // current settled count. Endpoints are estimates for the drag range only;
+  // outcomes stay exact through the solver's clamped reports.
+  const range = useMemo(() => {
+    if (!settled || settledSheets == null) return { min: 1, max: 1 };
+    const candidates = ladderCandidates(budgetBase, bounds);
+    const dense = sheetsForPages(predictPages(settled, candidates[0]));
+    const roomy = sheetsForPages(predictPages(settled, candidates[candidates.length - 1]));
+    return {
+      min: Math.max(1, Math.min(dense, settledSheets)),
+      max: Math.max(roomy, settledSheets),
+    };
+  }, [settled, settledSheets, budgetBase, bounds]);
+
+  let readout: Readout;
+  if (!settled || settledSheets == null) readout = { kind: "waiting" };
+  else if (solving) readout = { kind: "solving" };
+  else if (outcome && outcome.achieved === "closest") readout = { kind: "closest", sheets: outcome.sheets };
+  else if (outcome && outcome.achieved === "clamped-dense")
+    readout = { kind: "clamped-dense", sheets: outcome.sheets };
+  else if (outcome && outcome.achieved === "clamped-roomy")
+    readout = { kind: "clamped-roomy", sheets: outcome.sheets };
+  else readout = { kind: "settled", sheets: settledSheets };
+
+  const sliderValue = target ?? settledSheets ?? range.min;
+
   return (
     <div className="studio">
       <div className="studio__work">
-        <ControlPanel
+        <div className="studio__controls">
+          <BudgetSlider
+            min={range.min}
+            max={range.max}
+            value={sliderValue}
+            disabled={!settled}
+            solving={solving}
+            readout={readout}
+            bounds={bounds}
+            onTarget={onTarget}
+            onBounds={onBounds}
+          />
+          <ControlPanel
+            design={design}
+            onChange={onChange}
+            onReset={onResetDesign}
+            onFontFocus={warmFonts}
+          />
+        </div>
+        <BookPreview
+          document={document}
           design={design}
-          onChange={onChange}
-          onReset={onResetDesign}
-          onFontFocus={warmFonts}
+          onReset={onReset}
+          budget={budgetRequest}
+          onSolveOutcome={onSolveOutcome}
+          onSettled={onSettled}
+          createEngine={createEngine}
         />
-        <BookPreview document={document} design={design} onReset={onReset} />
       </div>
       <StructureView document={document} report={report} onReset={onReset} />
     </div>
