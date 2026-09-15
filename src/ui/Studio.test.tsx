@@ -47,6 +47,22 @@ describe("Studio", () => {
     expect(screen.getByLabelText(/Font size/i)).toHaveValue(16);
   });
 
+  it("resetting cancels a pending save, so defaults survive a reload", async () => {
+    const { unmount } = renderStudio();
+    // Change a dial, then reset within the 250ms save debounce window.
+    fireEvent.change(screen.getByLabelText(/Font size/i), { target: { value: "18" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
+    await wait(300); // give the now-cancelled debounced save a chance to fire
+
+    // The pre-reset dial never reaches storage; defaults are what persist.
+    const stored = JSON.parse(localStorage.getItem("bindery.design") ?? "{}");
+    expect(stored.design.font.sizePt).toBe(11);
+
+    unmount();
+    renderStudio();
+    expect(screen.getByLabelText(/Font size/i)).toHaveValue(11);
+  });
+
   it("warms fonts after first paint, not during the initial render", async () => {
     renderStudio();
     // The panel rendered without waiting on warming.

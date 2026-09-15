@@ -41,6 +41,10 @@ export function Studio({ document, report, onReset }: Props) {
   );
 
   const onResetDesign = useCallback(() => {
+    // Cancel any pending debounced save from a recent dial change; otherwise it
+    // fires after this reset and overwrites localStorage with the pre-reset
+    // design, so a reload would restore the old dials instead of the defaults.
+    if (saveTimer.current != null) clearTimeout(saveTimer.current);
     setDesign(DEFAULT_DESIGN);
     saveDesign(DEFAULT_DESIGN);
   }, []);

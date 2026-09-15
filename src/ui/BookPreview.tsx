@@ -28,7 +28,10 @@ const GUTTER_PX = 16;
 const H_PAD_PX = 16;
 // Coalesce a stream of dial changes into one paginate per frame.
 const REFLOW_DEBOUNCE_MS = 16;
-// Used before the viewport reports its real size (e.g. in jsdom).
+// Last resort when neither the container nor the viewport width can be read
+// (e.g. in jsdom, where clientWidth is 0). In a real browser we prefer the
+// live viewport width so the pre-measurement skeleton is never sized for a
+// wider screen than the phone actually has.
 const FALLBACK_WIDTH = 800;
 const FALLBACK_HEIGHT = 640;
 
@@ -75,9 +78,20 @@ export function BookPreview({ document, design, onReset, createEngine = defaultC
   // half-applied layout. Before the first result it is the live prop.
   const renderDesign = "design" in state ? state.design : design;
   const { width, height } = useViewportSize(viewportRef);
-  const availWidth = (width || FALLBACK_WIDTH) - 2 * H_PAD_PX;
+  // Before the ResizeObserver reports the container's real size, fall back to
+  // the live viewport width (mobile-safe) rather than a fixed desktop-ish
+  // width, and cap the measured width by the viewport too. Either way the
+  // skeleton spread can never be scaled wider than the screen, so it can't
+  // inflate the grid track past the viewport and flash a horizontal scrollbar
+  // on a phone. `document` here is the book prop, so read the DOM off `window`.
+  const viewportWidth =
+    typeof window !== "undefined" ? window.document.documentElement.clientWidth : 0;
+  const fallbackWidth = viewportWidth > 0 ? viewportWidth : FALLBACK_WIDTH;
+  let effectiveWidth = width || fallbackWidth;
+  if (viewportWidth > 0) effectiveWidth = Math.min(effectiveWidth, viewportWidth);
+  const availWidth = effectiveWidth - 2 * H_PAD_PX;
   const availHeight = height || FALLBACK_HEIGHT;
-  const mode: ViewMode = (width || FALLBACK_WIDTH) >= BREAKPOINT_PX ? "spread" : "single";
+  const mode: ViewMode = effectiveWidth >= BREAKPOINT_PX ? "spread" : "single";
 
   const leaf = pagePlacement(renderDesign, "recto");
   const scale = fitScale(mode, availWidth, leaf.pageWidthPx);
