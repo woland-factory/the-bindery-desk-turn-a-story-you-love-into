@@ -1,16 +1,24 @@
 import type { Document } from "../model/document";
 import type { DesignSpec, Page, PaginationResult, Timings } from "./types";
+import type { BudgetBounds, PassStats, SolveOutcome } from "./budget";
 import type { MainToWorker, WorkerToMain } from "./protocol";
 
 // Main-thread client. Owns one worker for the app's lifetime, sends `load`
-// once per book and `paginate` per design, and surfaces streamed results with
-// timings measured from each request's dispatch (isolating the engine from
-// parse time). Ignores messages from superseded requests (latest-wins).
+// once per book, `paginate` per design, and `solve` per budget target, and
+// surfaces streamed results with timings measured from each request's
+// dispatch (isolating the engine from parse time). Ignores messages from
+// superseded requests (latest-wins).
 
 export interface PaginateHandlers {
   onProgress?: (estimatedPageCount: number, firstPages: Page[], firstFeedbackMs: number) => void;
-  onDone?: (result: PaginationResult, timings: Timings) => void;
+  onDone?: (result: PaginationResult, timings: Timings, stats?: PassStats, solve?: SolveOutcome) => void;
   onError?: (message: string) => void;
+}
+
+export interface SolveRequest {
+  targetSheets: number;
+  base: DesignSpec;
+  bounds: BudgetBounds;
 }
 
 /** Global hook the preview and the perf harness read the latest timings from. */
@@ -27,6 +35,8 @@ interface ActiveRequest {
 export interface EngineClientLike {
   load(doc: Document): void;
   paginate(design: DesignSpec, handlers: PaginateHandlers): void;
+  /** Optional: run the paper-budget solve. Callers gate on the first settle. */
+  solve?(request: SolveRequest, handlers: PaginateHandlers): void;
   /** Optional: pre-load curated faces in the worker ahead of a paginate. */
   warmFonts?(fontIds: string[]): void;
   dispose(): void;
@@ -59,6 +69,20 @@ export class EngineClient implements EngineClientLike {
       return;
     }
     this.dispatchPaginate(design, handlers);
+  }
+
+  solve(request: SolveRequest, handlers: PaginateHandlers): void {
+    // The slider is enabled only after the first settle, so the book is
+    // loaded; the worker still guards a solve with no held document.
+    const id = this.nextId++;
+    this.active = { id, dispatchTs: now(), gotFirst: false, handlers };
+    this.send({
+      type: "solve",
+      requestId: id,
+      targetSheets: request.targetSheets,
+      base: request.base,
+      bounds: request.bounds,
+    });
   }
 
   warmFonts(fontIds: string[]): void {
@@ -113,7 +137,7 @@ export class EngineClient implements EngineClientLike {
         settleMs,
       };
       publishTimings(timings);
-      active.handlers.onDone?.(msg.result, timings);
+      active.handlers.onDone?.(msg.result, timings, msg.stats, msg.solve);
       this.active = null;
       return;
     }

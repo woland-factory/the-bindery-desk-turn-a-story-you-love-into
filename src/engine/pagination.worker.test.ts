@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => {
     ensureCalls,
     driveEngine: vi.fn(async () => {}),
     runEngine: vi.fn(() => ({})),
+    runSolve: vi.fn(async () => null),
     ensureFontLoaded: vi.fn(() => {
       let resolve!: () => void;
       const promise = new Promise<void>((r) => {
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("./engine", () => ({ driveEngine: mocks.driveEngine, runEngine: mocks.runEngine }));
+vi.mock("./solve", () => ({ runSolve: mocks.runSolve }));
 vi.mock("./fontFaces", () => ({ ensureFontLoaded: mocks.ensureFontLoaded }));
 vi.mock("../fonts/catalog", () => ({
   entryForStack: mocks.entryForStack,
@@ -50,6 +52,7 @@ beforeEach(async () => {
   posts = [];
   worker.postMessage = (m: unknown) => posts.push(m);
   mocks.driveEngine.mockClear();
+  mocks.runSolve.mockClear();
   mocks.ensureFontLoaded.mockClear();
   mocks.entryForId.mockClear();
   mocks.ensureCalls.length = 0;
@@ -94,5 +97,77 @@ describe("pagination worker font wiring", () => {
     expect(mocks.entryForId).toHaveBeenCalledWith("lora");
     expect(mocks.ensureFontLoaded).toHaveBeenCalledTimes(2);
     expect(mocks.driveEngine).not.toHaveBeenCalled();
+  });
+});
+
+describe("pagination worker stats and solve wiring", () => {
+  interface DonePost {
+    type: string;
+    stats?: { totalLines: number; openerPages: number; blankPages: number };
+  }
+
+  function fakeResult() {
+    const line = { text: "x", x: 0, y: 0, width: 1, hyphenated: false };
+    return {
+      pageCount: 2,
+      pages: [
+        { index: 0, side: "recto", kind: "opener", chapterIndex: 0, lines: [line, line] },
+        { index: 1, side: "verso", kind: "body", chapterIndex: 0, lines: [line, line, line] },
+      ],
+    };
+  }
+
+  it("attaches tallied stats to every paginate done", async () => {
+    const p = paginate('"Curated", serif');
+    await flush();
+    mocks.ensureCalls[0].resolve();
+    await p;
+
+    // The worker's transport (captured by the driveEngine mock) computes the
+    // stats when the pass posts done.
+    const transport = mocks.driveEngine.mock.calls[0][1] as unknown as {
+      postDone: (result: unknown, wordCount: number) => void;
+    };
+    transport.postDone(fakeResult(), 42);
+
+    const done = posts.find((m) => (m as DonePost).type === "done") as DonePost;
+    expect(done.stats).toEqual({ totalLines: 5, openerPages: 1, blankPages: 0 });
+  });
+
+  it("runs the solve after the base design's font is loaded", async () => {
+    const p = dispatch({
+      type: "solve",
+      requestId: nextId++,
+      targetSheets: 12,
+      base: { font: { family: '"Curated", serif' } },
+      bounds: {},
+    });
+    await flush();
+    expect(mocks.ensureFontLoaded).toHaveBeenCalledTimes(1);
+    expect(mocks.runSolve).not.toHaveBeenCalled();
+
+    mocks.ensureCalls[0].resolve();
+    await p;
+    expect(mocks.runSolve).toHaveBeenCalledTimes(1);
+    const [, request] = mocks.runSolve.mock.calls[0] as unknown[];
+    expect(request).toMatchObject({ targetSheets: 12 });
+  });
+
+  it("drops a solve superseded during its font load (latest-wins)", async () => {
+    const first = dispatch({
+      type: "solve",
+      requestId: nextId++,
+      targetSheets: 10,
+      base: { font: { family: '"A", serif' } },
+      bounds: {},
+    });
+    await flush();
+    const second = paginate('"B", serif');
+    await flush();
+
+    mocks.ensureCalls.forEach((c) => c.resolve());
+    await Promise.all([first, second]);
+    expect(mocks.runSolve).not.toHaveBeenCalled();
+    expect(mocks.driveEngine).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,6 +4,7 @@
 
 import type { Document } from "../model/document";
 import type { DesignSpec, Page, PaginationResult } from "./types";
+import type { BudgetBounds, PassStats, SolveOutcome } from "./budget";
 
 /** Sent once per book. The Document crosses by structured clone. */
 export interface LoadMessage {
@@ -29,7 +30,20 @@ export interface WarmFontsMessage {
   fontIds: string[];
 }
 
-export type MainToWorker = LoadMessage | PaginateMessage | WarmFontsMessage;
+/**
+ * Ask the worker to search the density ladder for the design whose real page
+ * count best fits `targetSheets`, then apply it. Enters the same latest-wins
+ * request stream as `paginate`: a newer paginate or solve supersedes it.
+ */
+export interface SolveMessage {
+  type: "solve";
+  requestId: number;
+  targetSheets: number;
+  base: DesignSpec;
+  bounds: BudgetBounds;
+}
+
+export type MainToWorker = LoadMessage | PaginateMessage | WarmFontsMessage | SolveMessage;
 
 /** Acknowledges that the book is ingested and held; the hot path can start. */
 export interface LoadedMessage {
@@ -51,6 +65,10 @@ export interface DoneMessage {
   requestId: number;
   result: PaginationResult;
   wordCount: number;
+  /** Lightweight stats of this pass, tallied while pages were assembled. */
+  stats: PassStats;
+  /** Present only when the request was a solve. */
+  solve?: SolveOutcome;
 }
 
 /** A product-voice, file-free message on failure. Never carries book text. */

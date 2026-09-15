@@ -6,6 +6,8 @@ import { driveEngine, runEngine, type EngineTransport } from "./engine";
 import type { Measurer } from "./measurer";
 import { ensureFontLoaded } from "./fontFaces";
 import { entryForId, entryForStack } from "../fonts/catalog";
+import { statsForResult } from "./budget";
+import { runSolve, type LastPass, type SolveTransport } from "./solve";
 
 // Worker entry. Holds the parsed Document in memory and re-paginates from a
 // `paginate` (a changed design) alone, so a re-flow never re-transfers or
@@ -17,6 +19,10 @@ const ctx = self as unknown as DedicatedWorkerGlobalScope;
 let heldDocument: Document | null = null;
 let currentRequestId = 0;
 let measurer: Measurer | null = null;
+// The most recent completed pass (paginate or solve). The solver's predictor
+// anchors to it, and a solve targeting the sheets the book already occupies
+// replies from it without an engine pass.
+let lastPass: LastPass | null = null;
 
 function post(message: WorkerToMain): void {
   ctx.postMessage(message);
@@ -41,6 +47,7 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
     // Deserializing the message already ingested the book; acknowledge so the
     // client can start the hot path with the worker warm.
     heldDocument = msg.document;
+    lastPass = null;
     post({ type: "loaded", requestId: msg.requestId });
     return;
   }
@@ -55,7 +62,7 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
     return;
   }
 
-  // paginate
+  // paginate or solve: both enter the same latest-wins request stream.
   currentRequestId = msg.requestId;
   const requestId = msg.requestId;
 
@@ -67,17 +74,49 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
   // Load the design's face before measuring. The system serif resolves to a
   // no-op; a warmed curated face resolves from cache; only a cold curated face
   // pays a one-time load. Honor latest-wins after the await.
-  await ensureFontLoaded(entryForStack(msg.design.font.family));
+  const family = msg.type === "solve" ? msg.base.font.family : msg.design.font.family;
+  await ensureFontLoaded(entryForStack(family));
   if (requestId !== currentRequestId) return;
 
   if (!measurer) measurer = createRuntimeMeasurer();
   const doc = heldDocument;
 
+  if (msg.type === "solve") {
+    const transport: SolveTransport = {
+      isStale: () => requestId !== currentRequestId,
+      postProgress: (estimatedPageCount, firstPages) =>
+        post({ type: "progress", requestId, estimatedPageCount, firstPages }),
+      postDone: (result, wordCount, stats, solve) =>
+        post({ type: "done", requestId, result, wordCount, stats, solve }),
+      yieldToLoop: macrotask,
+      now: () => performance.now(),
+    };
+    try {
+      const retained = await runSolve(
+        doc,
+        { targetSheets: msg.targetSheets, base: msg.base, bounds: msg.bounds },
+        measurer,
+        transport,
+        lastPass,
+      );
+      if (retained) lastPass = retained;
+    } catch {
+      if (requestId === currentRequestId) {
+        post({ type: "error", requestId, message: "The layout stopped before it finished." });
+      }
+    }
+    return;
+  }
+
   const transport: EngineTransport = {
     isStale: () => requestId !== currentRequestId,
     postProgress: (estimatedPageCount, firstPages) =>
       post({ type: "progress", requestId, estimatedPageCount, firstPages }),
-    postDone: (result, wordCount) => post({ type: "done", requestId, result, wordCount }),
+    postDone: (result, wordCount) => {
+      const stats = statsForResult(result);
+      lastPass = { design: msg.design, result, wordCount, stats };
+      post({ type: "done", requestId, result, wordCount, stats });
+    },
     yieldToLoop: macrotask,
     now: () => performance.now(),
   };
