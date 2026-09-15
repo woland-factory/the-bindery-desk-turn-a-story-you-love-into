@@ -27,6 +27,8 @@ interface ActiveRequest {
 export interface EngineClientLike {
   load(doc: Document): void;
   paginate(design: DesignSpec, handlers: PaginateHandlers): void;
+  /** Optional: pre-load curated faces in the worker ahead of a paginate. */
+  warmFonts?(fontIds: string[]): void;
   dispose(): void;
 }
 
@@ -57,6 +59,11 @@ export class EngineClient implements EngineClientLike {
       return;
     }
     this.dispatchPaginate(design, handlers);
+  }
+
+  warmFonts(fontIds: string[]): void {
+    if (fontIds.length === 0) return;
+    this.send({ type: "warm-fonts", fontIds });
   }
 
   dispose(): void {

@@ -4,6 +4,8 @@ import type { MainToWorker, WorkerToMain } from "./protocol";
 import { createRuntimeMeasurer } from "./offscreenMeasurer";
 import { driveEngine, runEngine, type EngineTransport } from "./engine";
 import type { Measurer } from "./measurer";
+import { ensureFontLoaded } from "./fontFaces";
+import { entryForId, entryForStack } from "../fonts/catalog";
 
 // Worker entry. Holds the parsed Document in memory and re-paginates from a
 // `paginate` (a changed design) alone, so a re-flow never re-transfers or
@@ -24,12 +26,14 @@ function macrotask(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-// This EPIC's default design uses a system serif stack (Georgia, Times, serif)
-// whose metrics resolve synchronously, so there is no web font to wait for.
-// We deliberately do NOT gate the pass on `self.fonts.ready`: it does not
-// resolve in a dedicated worker in some engines, and any wait would push first
-// feedback past the 100ms budget. A later EPIC that embeds custom fonts warms
-// them before measuring instead of blocking the first pass.
+// The default design uses a system serif stack (Georgia, Times, serif) whose
+// metrics resolve synchronously, so there is no web font to wait for and the
+// default path adds no font work before its first pass. A curated face,
+// however, only measures correctly once it is present in the worker's
+// FontFaceSet, so we load it (once, cached) before driving the engine. We still
+// do NOT gate on `self.fonts.ready`: for the system serif that resolves to a
+// no-op, and warming a curated face ahead of the paginate keeps the load off
+// the first-feedback path.
 
 ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
   const msg = event.data;
@@ -41,6 +45,16 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
     return;
   }
 
+  if (msg.type === "warm-fonts") {
+    // Fire and forget: pull the requested faces into the FontFaceSet ahead of
+    // a paginate that will need them. No reply, no effect on latest-wins.
+    for (const id of msg.fontIds) {
+      const entry = entryForId(id);
+      if (entry) void ensureFontLoaded(entry);
+    }
+    return;
+  }
+
   // paginate
   currentRequestId = msg.requestId;
   const requestId = msg.requestId;
@@ -49,6 +63,12 @@ ctx.onmessage = async (event: MessageEvent<MainToWorker>) => {
     post({ type: "error", requestId, message: "Reload the book to lay it out." });
     return;
   }
+
+  // Load the design's face before measuring. The system serif resolves to a
+  // no-op; a warmed curated face resolves from cache; only a cold curated face
+  // pays a one-time load. Honor latest-wins after the await.
+  await ensureFontLoaded(entryForStack(msg.design.font.family));
+  if (requestId !== currentRequestId) return;
 
   if (!measurer) measurer = createRuntimeMeasurer();
   const doc = heldDocument;

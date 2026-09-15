@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { Document } from "../model/document";
-import type { Page, PaginationResult } from "../engine/types";
-import { DEFAULT_DESIGN } from "../engine/defaultDesign";
+import type { DesignSpec, Page, PaginationResult } from "../engine/types";
 import { EngineClient, type EngineClientLike } from "../engine/client";
+import { entryForStack } from "../fonts/catalog";
+import { affectsPagination } from "./design/designPatch";
 import { pagePlacement } from "./pageGeometry";
 import { groupSpreads, type ViewMode } from "./spreads";
 import { windowSpreads } from "./bookScroller";
@@ -11,9 +12,10 @@ import { Spread } from "./Spread";
 
 // The product's typeset surface. It consumes the engine's PaginationResult
 // read-only and paints a real, book-shaped, virtualized view: geometry for the
-// whole book, only the visible spreads in the DOM. It renders DEFAULT_DESIGN
-// only (controls arrive in a later EPIC) and replaces the throwaway
-// EnginePreview end to end.
+// whole book, only the visible spreads in the DOM. The live design arrives as a
+// prop; the engine stays alive across design changes and re-paginates on change
+// without blanking or resetting scroll. Each mounted page is drawn with the
+// design that produced it, so a re-flow never shows a half-applied layout.
 
 // Single below this width, facing spread at or above it, so both leaves stay
 // readable in spread mode.
@@ -24,19 +26,22 @@ const OVERSCAN = 2;
 const ROW_GAP_PX = 24;
 const GUTTER_PX = 16;
 const H_PAD_PX = 16;
+// Coalesce a stream of dial changes into one paginate per frame.
+const REFLOW_DEBOUNCE_MS = 16;
 // Used before the viewport reports its real size (e.g. in jsdom).
 const FALLBACK_WIDTH = 800;
 const FALLBACK_HEIGHT = 640;
 
 type PreviewState =
   | { status: "laying-out" }
-  | { status: "first-spread"; pages: Page[] }
-  | { status: "ready"; result: PaginationResult }
+  | { status: "first-spread"; pages: Page[]; design: DesignSpec }
+  | { status: "ready"; result: PaginationResult; design: DesignSpec; reflowing: boolean }
   | { status: "empty" }
   | { status: "error" };
 
 interface Props {
   document: Document;
+  design: DesignSpec;
   onReset: () => void;
   /** Injectable for tests; defaults to a real worker-backed client. */
   createEngine?: () => EngineClientLike | null;
@@ -51,38 +56,107 @@ function defaultCreateEngine(): EngineClientLike | null {
   }
 }
 
-export function BookPreview({ document, onReset, createEngine = defaultCreateEngine }: Props) {
+export function BookPreview({ document, design, onReset, createEngine = defaultCreateEngine }: Props) {
   const [state, setState] = useState<PreviewState>({ status: "laying-out" });
   const [scrollTop, setScrollTop] = useState(0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const createRef = useRef(createEngine);
+  const engineRef = useRef<EngineClientLike | null>(null);
   const rafRef = useRef<number | null>(null);
+  // The design of the currently mounted (or in-flight) result. `null` until the
+  // first pass starts, which lets the design-change effect skip the initial
+  // render (the engine effect already kicks that off).
+  const committedRef = useRef<DesignSpec | null>(null);
+  // A scroll fraction to restore after a result swap changes the page count.
+  const anchorRef = useRef<number | null>(null);
 
+  // Design the mounted surface is drawn with. During a re-flow this stays the
+  // old design until `done` swaps in the new result, so no page renders with a
+  // half-applied layout. Before the first result it is the live prop.
+  const renderDesign = "design" in state ? state.design : design;
   const { width, height } = useViewportSize(viewportRef);
   const availWidth = (width || FALLBACK_WIDTH) - 2 * H_PAD_PX;
   const availHeight = height || FALLBACK_HEIGHT;
   const mode: ViewMode = (width || FALLBACK_WIDTH) >= BREAKPOINT_PX ? "spread" : "single";
 
-  const leaf = pagePlacement(DEFAULT_DESIGN, "recto");
+  const leaf = pagePlacement(renderDesign, "recto");
   const scale = fitScale(mode, availWidth, leaf.pageWidthPx);
   const stridePx = leaf.pageHeightPx * scale + ROW_GAP_PX;
 
+  const startPaginate = useCallback((engine: EngineClientLike, target: DesignSpec) => {
+    // Pre-warm a curated face in the worker; the system serif is embeddable:
+    // false, so the default path posts nothing and stays untouched.
+    const entry = entryForStack(target.font.family);
+    if (entry?.embeddable) engine.warmFonts?.([entry.id]);
+
+    engine.paginate(target, {
+      onProgress: (_estimate, firstPages) =>
+        setState((prev) =>
+          // Keep a settled book mounted during a re-flow; only paint the first
+          // spread when there is nothing yet.
+          prev.status === "ready" ? prev : { status: "first-spread", pages: firstPages, design: target },
+        ),
+      onDone: (result) => {
+        if (result.pageCount === 0) {
+          setState({ status: "empty" });
+          return;
+        }
+        const el = viewportRef.current;
+        if (el) {
+          const max = Math.max(0, el.scrollHeight - el.clientHeight);
+          anchorRef.current = max > 0 ? el.scrollTop / max : 0;
+        }
+        setState({ status: "ready", result, design: target, reflowing: false });
+      },
+      onError: () => setState({ status: "error" }),
+    });
+  }, []);
+
+  // Engine lifecycle: keyed on the document only, so a design change never
+  // recreates the engine. Creates it, loads the book once, kicks off the first
+  // pass, and disposes on unmount / document change.
   useEffect(() => {
     setState({ status: "laying-out" });
     setScrollTop(0);
+    anchorRef.current = null;
     if (viewportRef.current) viewportRef.current.scrollTop = 0;
     const engine = createRef.current();
+    engineRef.current = engine;
+    committedRef.current = design;
     if (!engine) return;
     engine.load(document);
-    engine.paginate(DEFAULT_DESIGN, {
-      onProgress: (_estimate, firstPages) =>
-        setState((prev) => (prev.status === "ready" ? prev : { status: "first-spread", pages: firstPages })),
-      onDone: (result) =>
-        setState(result.pageCount === 0 ? { status: "empty" } : { status: "ready", result }),
-      onError: () => setState({ status: "error" }),
-    });
-    return () => engine.dispose();
-  }, [document]);
+    startPaginate(engine, design);
+    return () => {
+      engine.dispose();
+      engineRef.current = null;
+    };
+    // `design` is intentionally omitted: the initial design is captured above,
+    // and later design changes are handled by the effect below without a reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [document, startPaginate]);
+
+  // Design changes after the first pass: re-paginate engine-affecting changes
+  // without blanking, or re-render header-only changes in place.
+  useEffect(() => {
+    const engine = engineRef.current;
+    const prev = committedRef.current;
+    if (!engine || prev === null || prev === design) return;
+
+    const affects = affectsPagination(prev, design);
+    committedRef.current = design;
+
+    if (!affects) {
+      // Header-only: commit the new design in place, no paginate.
+      setState((s) =>
+        s.status === "ready" || s.status === "first-spread" ? { ...s, design } : s,
+      );
+      return;
+    }
+
+    setState((s) => (s.status === "ready" ? { ...s, reflowing: true } : s));
+    const timer = setTimeout(() => startPaginate(engine, design), REFLOW_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [design, startPaginate]);
 
   const onScroll = useCallback(() => {
     if (rafRef.current != null) return;
@@ -109,6 +183,19 @@ export function BookPreview({ document, onReset, createEngine = defaultCreateEng
   const spreads = useMemo(() => groupSpreads(pages, mode), [pages, mode]);
   const win = windowSpreads(spreads.length, stridePx, scrollTop, availHeight, OVERSCAN);
 
+  // Restore the captured scroll fraction after a result swap re-sizes the book.
+  useLayoutEffect(() => {
+    const frac = anchorRef.current;
+    if (frac == null) return;
+    anchorRef.current = null;
+    const el = viewportRef.current;
+    if (!el) return;
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    const top = frac * max;
+    el.scrollTop = top;
+    setScrollTop(top);
+  }, [state]);
+
   if (state.status === "error") {
     return (
       <StatePanel
@@ -133,25 +220,31 @@ export function BookPreview({ document, onReset, createEngine = defaultCreateEng
   }
 
   const layingOut = state.status === "laying-out";
+  const reflowing = state.status === "ready" && state.reflowing;
   const visible = spreads.slice(win.firstSpread, win.lastSpread + 1);
   const pageCount = state.status === "ready" ? state.result.pageCount : 0;
 
   return (
     <section className="preview" aria-label="Book layout">
       <p className="preview__count" aria-live="polite">
-        {state.status === "ready" ? countLabel(pageCount) : " "}
+        {state.status === "ready" ? countLabel(pageCount) : " "}
       </p>
+      {reflowing && (
+        <span className="preview__reflow" aria-hidden="true">
+          Reflowing
+        </span>
+      )}
       <div
         ref={viewportRef}
         className="book"
         role="region"
         aria-label="Book preview"
-        aria-busy={layingOut}
+        aria-busy={layingOut || reflowing}
         tabIndex={0}
         onScroll={onScroll}
       >
         {layingOut ? (
-          <SkeletonSpread scale={scale} mode={mode} />
+          <SkeletonSpread design={renderDesign} scale={scale} mode={mode} />
         ) : (
           <div className="book__spacer" style={{ height: win.totalPx }}>
             <div className="book__window" style={{ transform: `translateY(${win.topPadPx}px)` }}>
@@ -159,7 +252,7 @@ export function BookPreview({ document, onReset, createEngine = defaultCreateEng
                 <Spread
                   key={win.firstSpread + i}
                   row={row}
-                  design={DEFAULT_DESIGN}
+                  design={renderDesign}
                   doc={document}
                   scale={scale}
                 />
@@ -203,8 +296,8 @@ function useViewportSize(ref: React.RefObject<HTMLElement>) {
 }
 
 /** A layout-stable skeleton at the dimensions the real spread will occupy. */
-function SkeletonSpread({ scale, mode }: { scale: number; mode: ViewMode }) {
-  const leaf = pagePlacement(DEFAULT_DESIGN, "recto");
+function SkeletonSpread({ design, scale, mode }: { design: DesignSpec; scale: number; mode: ViewMode }) {
+  const leaf = pagePlacement(design, "recto");
   const style: CSSProperties = { width: leaf.pageWidthPx * scale, height: leaf.pageHeightPx * scale };
   const count = mode === "spread" ? 2 : 1;
   return (

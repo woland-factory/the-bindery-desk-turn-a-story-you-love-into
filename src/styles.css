@@ -368,19 +368,150 @@ body {
   white-space: nowrap;
 }
 
-/* --- Facing-page preview --- */
-/* The preview breaks out of the narrow reading column so facing spreads have
-   room on a wide screen. It stays centered on the viewport and never wider
-   than the viewport, so a 390px screen sees one page and no horizontal
-   scroll. */
-.preview {
-  width: min(1120px, calc(100vw - 2rem));
+/* --- Studio: control panel beside the preview --- */
+/* The studio breaks out of the narrow reading column so the panel and the
+   facing spreads share a wide surface. It stays centered on the viewport and
+   never wider than it, so a 390px screen stacks the panel above one page with
+   no horizontal scroll. */
+.studio {
+  width: min(1200px, calc(100vw - 2rem));
   position: relative;
   left: 50%;
   transform: translateX(-50%);
-  margin-top: 2rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--line);
+  margin-top: 1.25rem;
+}
+
+.studio__work {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 900px) {
+  .studio__work {
+    grid-template-columns: minmax(280px, 340px) 1fr;
+  }
+}
+
+/* --- Control panel --- */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.1rem 1rem;
+  box-shadow: var(--shadow);
+}
+
+.panel__primary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.panel__export {
+  width: 100%;
+  font-size: 1.05rem;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn:disabled:active {
+  transform: none;
+}
+
+.panel__hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.panel__group {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.7rem 0.85rem 0.85rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.panel__group legend {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  padding: 0 0.35rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  flex: 1 1 5rem;
+}
+
+.field > label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.field__unit {
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.field select,
+.field input[type="number"] {
+  font: inherit;
+  min-height: 44px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--ink);
+  width: 100%;
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.field--toggle {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.field--toggle input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.field--toggle label {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.panel__reset {
+  align-self: flex-start;
+}
+
+/* --- Facing-page preview --- */
+.preview {
+  position: relative;
 }
 
 .preview__count {
@@ -389,6 +520,19 @@ body {
   font-size: 0.85rem;
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
+}
+
+/* Quiet, non-layout-shifting re-flow marker, pinned to the preview corner. */
+.preview__reflow {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  pointer-events: none;
 }
 
 .preview__heading {
@@ -515,8 +659,19 @@ body {
 @media print {
   .app__header,
   .structure,
-  .preview__count {
+  .panel,
+  .preview__count,
+  .preview__reflow {
     display: none;
+  }
+  .studio,
+  .studio__work {
+    position: static;
+    left: auto;
+    transform: none;
+    width: auto;
+    display: block;
+    margin: 0;
   }
   .preview {
     position: static;

@@ -19,7 +19,17 @@ export interface PaginateMessage {
   design: DesignSpec;
 }
 
-export type MainToWorker = LoadMessage | PaginateMessage;
+/**
+ * Ask the worker to load curated faces into its FontFaceSet ahead of need, so a
+ * later paginate against one of them measures without a load stall. Fire and
+ * forget: the worker sends no reply.
+ */
+export interface WarmFontsMessage {
+  type: "warm-fonts";
+  fontIds: string[];
+}
+
+export type MainToWorker = LoadMessage | PaginateMessage | WarmFontsMessage;
 
 /** Acknowledges that the book is ingested and held; the hot path can start. */
 export interface LoadedMessage {

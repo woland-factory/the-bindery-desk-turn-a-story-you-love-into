@@ -7,8 +7,7 @@ import { loadSample } from "./sample/loadSample";
 import { ImportSurface } from "./ui/ImportSurface";
 import { LoadingState } from "./ui/LoadingState";
 import { ErrorState, type AppError } from "./ui/ErrorState";
-import { StructureView } from "./ui/StructureView";
-import { BookPreview } from "./ui/BookPreview";
+import { Studio } from "./ui/Studio";
 
 type State =
   | { status: "empty" }
@@ -91,10 +90,7 @@ export default function App() {
         )}
         {state.status === "loading" && <LoadingState name={state.name} />}
         {state.status === "ready" && (
-          <>
-            <StructureView document={state.document} report={state.report} onReset={reset} />
-            <BookPreview document={state.document} onReset={reset} />
-          </>
+          <Studio document={state.document} report={state.report} onReset={reset} />
         )}
         {state.status === "error" && (
           <ErrorState
