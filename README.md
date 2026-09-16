@@ -11,12 +11,17 @@ page numbers, and chapters that open on the right. A control panel beside the
 preview gives you the dials your Word template used to hold: page size, font,
 font size, line spacing, margins, chapter opening, running-header content,
 widow and orphan control, and hyphenation. Turn any dial and the whole book
-re-flows live. The layout runs in a background worker, so even a 300,000-word
-novel settles in about a second and a half, first feedback lands well under a
-tenth of a second, and the preview keeps the last book on screen while the new
-one arrives, so it never blinks. Your dials are saved in this browser and come
-back when you reopen the book. The paper-budget slider and PDF export arrive in
-later milestones.
+re-flows live. Above the dials sits the paper-budget slider: pick how many
+sheets of paper the book should fit, and a solver adjusts font size, line
+spacing, and margins inside bounds you set, then re-flows the whole book to
+the closest real design. The readout always states the exact sheet and
+signature count of the book on screen, and when your bounds cannot reach a
+target it names the count they can reach. The layout runs in a background
+worker, so even a 300,000-word novel settles in about a second and a half,
+first feedback lands well under a tenth of a second, and the preview keeps
+the last book on screen while the new one arrives, so it never blinks. Your
+dials and bounds are saved in this browser and come back when you reopen the
+book. PDF export and the folded imposition layout arrive in later milestones.
 
 ## Your file stays on your computer
 
@@ -103,16 +108,19 @@ src/
   model/         in-memory book model (Document, Chapter, Block) + import report
   epub/          the EPUB parser: unzip, container, OPF, TOC, chapters, XHTML
   engine/        the pagination engine: line breaking, hyphenation, page assembly, worker, font loading
+  engine/budget.ts  sheet math, solver bounds, the density ladder, the page predictor
+  engine/solve.ts   the worker-side paper-budget solve (bounded exact counts)
   fonts/         the curated font catalog and the main-thread loader
   ui/            import states, the studio (control panel + facing-page preview), structure view
   ui/design/     pure design logic: trim presets, setters, session persistence
+  ui/budget/     the paper-budget slider, readout, bounds, and their persistence
   integrations/  Sentry and Umami, both runtime-gated and privacy-safe
   config/        runtime config read from window.__BINDERY_CONFIG__
   sample/        one-tap loader for the bundled sample book
 public/sample/   the bundled public-domain sample EPUB
 public/fonts/    the curated woff2 book faces, their license, and provenance
 docker/          nginx config and the startup script that generates /config.js
-e2e/             Playwright specs
+e2e/             Playwright specs: import, pagination, preview, typography, budget
 ```
 
 The dials write a plain `DesignSpec`; every change re-paginates in the worker
@@ -126,9 +134,12 @@ book without re-reading the file.
 
 ## The sample book
 
-`public/sample/aesops-fables.epub` is a short selection of Aesop's Fables in
-the George Fyler Townsend translation (1887), which is in the public domain
-worldwide and redistributable. Regenerate it with `node scripts/makeSample.mjs`.
+`public/sample/aesops-fables.epub` is a selection of Aesop's Fables in the
+George Fyler Townsend translation, which is in the public domain worldwide
+and redistributable. Each of its four chapters opens with a well-known fable
+and carries a further selection from `scripts/sampleFables.json`, so the
+sample is a real small book the paper-budget slider can move. Regenerate it
+with `node scripts/makeSample.mjs`.
 
 ## Bundled fonts
 
