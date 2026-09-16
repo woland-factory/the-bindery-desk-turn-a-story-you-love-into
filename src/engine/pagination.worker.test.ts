@@ -125,7 +125,7 @@ describe("pagination worker stats and solve wiring", () => {
 
     // The worker's transport (captured by the driveEngine mock) computes the
     // stats when the pass posts done.
-    const transport = mocks.driveEngine.mock.calls[0][1] as unknown as {
+    const transport = (mocks.driveEngine.mock.calls[0] as unknown[])[1] as {
       postDone: (result: unknown, wordCount: number) => void;
     };
     transport.postDone(fakeResult(), 42);

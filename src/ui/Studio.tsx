@@ -148,19 +148,24 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
 
   const settledSheets = settled ? sheetsForPages(settled.pageCount) : null;
 
+  // The ladder is rebuilt only when its inputs move, not on every settle.
+  const ladderEnds = useMemo(() => {
+    const candidates = ladderCandidates(budgetBase, bounds);
+    return { dense: candidates[0], roomy: candidates[candidates.length - 1] };
+  }, [budgetBase, bounds]);
+
   // Drag range: predicted sheets at the ladder's ends, widened to include the
   // current settled count. Endpoints are estimates for the drag range only;
   // outcomes stay exact through the solver's clamped reports.
   const range = useMemo(() => {
     if (!settled || settledSheets == null) return { min: 1, max: 1 };
-    const candidates = ladderCandidates(budgetBase, bounds);
-    const dense = sheetsForPages(predictPages(settled, candidates[0]));
-    const roomy = sheetsForPages(predictPages(settled, candidates[candidates.length - 1]));
+    const dense = sheetsForPages(predictPages(settled, ladderEnds.dense));
+    const roomy = sheetsForPages(predictPages(settled, ladderEnds.roomy));
     return {
       min: Math.max(1, Math.min(dense, settledSheets)),
       max: Math.max(roomy, settledSheets),
     };
-  }, [settled, settledSheets, budgetBase, bounds]);
+  }, [settled, settledSheets, ladderEnds]);
 
   let readout: Readout;
   if (!settled || settledSheets == null) readout = { kind: "waiting" };

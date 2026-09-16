@@ -17,18 +17,28 @@ import { runSolve, MAX_SOLVE_PASSES, type LastPass, type SolveTransport } from "
 
 const measurer = new SyntheticMeasurer();
 
+// Deterministic prose with real variety: identical paragraphs would make
+// every chapter's line count move in lockstep across designs, a staircase no
+// real book exhibits.
+const PHRASES = [
+  "The quick brown fox jumps over the lazy dog and keeps on running through the meadow.",
+  "It pauses at the old stone wall and listens to the wind moving in the aspens.",
+  "A thin path bends along the river where the reeds stand higher than a child.",
+  "Someone left a gate open and the sheep wandered into the lower field before dawn.",
+  "Rain came in the night, quiet and long, and the lane still smells of it.",
+  "The miller's cart went by at noon, loaded past sense, its axle complaining.",
+  "By evening the ridge turns the color of tea and the swallows come down low.",
+];
+
 function chapter(order: number, paras: number): Chapter {
   const blocks: Block[] = [
     { type: "heading", keptOrDropped: "kept", level: 1, text: `Chapter ${order}` },
   ];
   for (let i = 0; i < paras; i++) {
-    blocks.push({
-      type: "paragraph",
-      keptOrDropped: "kept",
-      text:
-        "The quick brown fox jumps over the lazy dog and keeps on running through the meadow. " +
-        "It pauses at the old stone wall, listens to the wind in the aspens, and moves on.",
-    });
+    const a = PHRASES[(order * 3 + i) % PHRASES.length];
+    const b = PHRASES[(order + i * 5 + 2) % PHRASES.length];
+    const c = PHRASES[(order * 2 + i * 7 + 4) % PHRASES.length];
+    blocks.push({ type: "paragraph", keptOrDropped: "kept", text: `${a} ${b} ${c}` });
   }
   return { id: `c${order}`, title: `Chapter ${order}`, order, blocks };
 }

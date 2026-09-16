@@ -1,518 +1,561 @@
-# EPIC SPEC — Typography dials
+# EPIC SPEC — Paper-budget slider (signature moment)
 
-> EPIC 4 of The Bindery Desk. EPIC 3 put a real book on screen for one fixed
-> design (`DEFAULT_DESIGN`). This EPIC gives the binder the dials their Word
-> template encodes and re-flows the whole book live as they turn them: page
-> size, font, font size, line spacing, margins, chapter opening, running-header
-> content, widow/orphan control, and hyphenation. It adds a radically simple
-> control panel beside the existing facing-page preview, wires each engine-
-> affecting change through the pagination worker (which already holds the book
-> and re-paginates from a design alone), and persists the working design so a
-> reload restores the binder's dials.
+> EPIC 5 of The Bindery Desk. EPIC 2 built the streamed pagination engine,
+> EPIC 3 the facing-page preview, EPIC 4 the typography dials with live
+> whole-book re-flow. This EPIC ships the product's signature moment: the
+> "Fit into N sheets" slider. A deterministic solver negotiates font size,
+> line spacing, and margins within user-set bounds to hit a target sheet
+> count, re-flowing the whole book live through the existing warm worker,
+> and a readout shows the resulting sheet and signature count. When bounds
+> prevent the target, the solver reports the exact achievable count on that
+> side, never a silent miss and never a dead end.
 >
-> This EPIC adds NO paper-budget slider (EPIC 5), NO export or imposition
-> (EPIC 6), NO project files / named house-style presets / guided walkthrough
-> (EPIC 7), and NO fonts beyond the curated set. It does not edit the story
-> text or re-parse the file.
+> This EPIC adds NO new typography dials beyond EPIC 4's nine, NO cover or
+> spine math, NO export/imposition (EPIC 6), NO project files or presets
+> (EPIC 7), and NO server-side computation. Everything runs in the browser:
+> main thread plus the existing pagination worker.
 
 ---
 
 ## Quality differentiator (this product must win here)
 
-**Live responsiveness of the whole-book re-flow.** Any control re-flows the
-entire book with perceptible feedback under 100ms and a settled result within
-about two seconds on a 300k-word novel. We do not out-feature InDesign. We make
-control immediate and reversible in a way no free path (Word, Calibre, Reedsy)
-offers.
+**Live responsiveness of the whole-book re-flow.** Any control, above all
+this slider, re-flows the entire book with perceptible feedback under 100ms
+and a settled result within about two seconds on a 300k-word novel. We do
+not out-feature InDesign. We make control immediate and reversible in a way
+no free path (Word, Calibre, Reedsy) offers.
 
-**What it demands of THIS EPIC:** the dials ARE the differentiator's proving
-ground. Every engine-affecting change must ride the exact hot path EPIC 2 built
-and EPIC 3 rendered against, so the budgets hold under a stream of user input:
+**What it demands of THIS EPIC:** the slider is the differentiator's whole
+reason to exist, and it is the hardest case: one drag implies a *search*
+over designs, not a single pass. The budget is not negotiable:
 
-- **Instant control feedback.** Turning a dial updates the control itself in
-  the same frame (optimistic, native input state), so the user always feels the
-  change under 100ms even before pages re-flow.
-- **Reuse the warm worker.** The worker holds the parsed `Document` (`load` is
-  sent once). A dial change sends only `paginate(design)`, never re-transfers or
-  re-parses the book. The worker's latest-wins cancellation (`isStale`) already
-  supersedes stale requests, so dragging a numeric control never queues a
-  backlog.
-- **Never blank on re-flow.** The last good result stays mounted (rendered with
-  its own matched design) while the new pass runs; the streamed `firstPages`
-  repaint the top of the book inside the 100ms window; the full result swaps in
-  on `done`. No dial change may drop the surface to the skeleton or reset scroll.
-- **Render-only changes skip the engine.** Running-header content changes only
-  what the renderer draws, not pagination geometry, so they apply in the same
-  frame with no `paginate` call at all.
-- **The default path stays untouched.** A fresh session's initial pagination is
-  still `DEFAULT_DESIGN` with the system serif stack, with zero added
-  synchronous or async work before the first `paginate`. EPIC 2's budget,
-  determinism, and long-task e2e specs must pass unchanged.
+- **Instant control feedback.** The thumb, the target readout, and a busy
+  affordance update in the same frame as the drag. The book's streamed
+  `firstPages` land within 100ms of dispatch, exactly as a dial change does.
+- **Settled within about 2 seconds on Middlemarch (300k words).** The solve
+  may run at most a small, fixed number of exact evaluation passes; the
+  design below (predictor narrows, exact counts verify, winner's result is
+  reused rather than re-laid-out) is chosen to fit that envelope. If the
+  measured drag-to-settle time exceeds the budget on the 300k fixture, the
+  EPIC is failed, not shipped degraded; tuning worker internals (fewer
+  count passes, a cheaper event-loop yield) to meet it is in scope.
+- **Latest-wins under a drag stream.** A drag emits many targets; every
+  superseded solve must die promptly (stale checks inside the count loop,
+  not just between passes). No backlog, no stale result ever painting.
+- **Never blank, never lose the reader's place.** The solve's final result
+  flows through the same `progress`/`done` path EPIC 4 re-flows use, so the
+  mounted book, the reflow affordance, and fraction-based scroll anchoring
+  are inherited, not reimplemented.
+- **Exact numbers only.** The readout after settle always states the real
+  sheet count of the applied design, taken from the engine's own result.
+  The predictor is a search accelerator; it never reaches the user's eyes.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **A control panel of typography dials**, each mapped to a field of
-   `DesignSpec` (`src/engine/types.ts`), controlled by the active design and an
-   `onChange`:
-   - **Page size (trim).** A curated preset list plus a "Custom size" mode with
-     width, height, and unit (`in`/`mm`) inputs. Presets set `trim` whole.
-   - **Font.** A small curated set of embeddable, licensed faces, plus the
-     system serif default. Sets `font.family`.
-   - **Font size.** `font.sizePt`, a bounded numeric stepper.
-   - **Line spacing.** A multiplier of font size that derives `font.lineHeightPt`.
-   - **Margins.** Inner, outer, top, bottom, in the trim's unit. Sets `margins`.
-   - **Chapter opening.** The opener top-drop (`chapterOpening.topDropPt`) as a
-     small named set, and a "start chapters on the right" toggle
-     (`chapterOpening.startRecto`).
-   - **Running-header content.** Left-page and right-page pickers over the
-     book-data tokens. Sets `runningHeader.verso` / `runningHeader.recto`.
-   - **Widow and orphan control.** `widowControl` toggle.
-   - **Hyphenation.** `hyphenation` toggle.
-2. **Live re-flow wiring.** Every engine-affecting dial re-paginates through the
-   existing `EngineClient` against the warm worker; the preview swaps to the new
-   result without blanking or losing scroll position. Running-header changes
-   re-render only.
-3. **Correct trim re-mirroring.** Changing the page size (or any margin) re-
-   derives the mirrored placement so a verso still carries the outer margin on
-   its left and a recto the inner margin, and the text column re-widths to
-   `trim.w - inner - outer`. This is `pageGeometry.pagePlacement` already; the
-   EPIC guarantees the preview reflects it after every trim change.
-4. **Curated embeddable fonts, measured accurately.** Each curated face is
-   bundled as a woff2 (regular + bold), declared with `@font-face` for on-screen
-   rendering, and **loaded into the worker's `FontFaceSet` before it measures**,
-   so line breaking uses the real face's metrics (what you see is what settles).
-   The default system serif requires no load. Embeddability is proven end to end
-   in EPIC 6; this EPIC bundles the licensed files and proves they render and
-   drive pagination.
-5. **Session persistence of the working design.** The current `DesignSpec` is
-   saved to `localStorage` and restored on reload in the same browser, merged
-   forward-compatibly onto `DEFAULT_DESIGN`. Design only. No file content, no
-   PII, no project files, no named presets.
-6. **Radically simple, mobile-first, accessible panel.** One visually primary
-   action slot (Export, reserved and disabled here since export is EPIC 6),
-   visibly subordinate dials, usable at a 390px viewport with ~44px targets,
-   every input labeled, full keyboard reach with visible focus.
-7. **A "reset to defaults" action** so a binder can return to `DEFAULT_DESIGN`
-   in one tap (a real, in-scope secondary action).
+1. **The "Fit into N sheets" slider.** A native range input, prominent at
+   the top of the studio's control column, whose value is a target sheet
+   count. Dragging it runs the solver and re-flows the whole book live.
+   Sheet math for this EPIC: one sheet folded once holds 4 book pages
+   (`PAGES_PER_SHEET = 4`, the community's folio standard), and signatures
+   are counted at 4 sheets each (`SHEETS_PER_SIGNATURE = 4`, 16 pages).
+   Both are named constants with a comment; making them configurable is
+   EPIC 6's imposition surface.
+2. **The solver.** Deterministic search over a one-dimensional "density
+   ladder": a parameter `t ∈ [0, 1]` interpolates the three levers between
+   their user bounds (font size in pt, line-spacing multiple, and a margin
+   scale applied to the binder's own margins), snapped to the existing dial
+   lattice so every candidate is a valid `DesignSpec`. Page count along the
+   ladder is monotone (up to snap noise), so the search is: predict from
+   the last settled pass's stats, verify with a bounded number of exact
+   worker-local counts, apply the best real result.
+3. **User-set bounds.** A collapsed "Bounds" disclosure under the slider:
+   font size min/max (pt), line spacing min/max (multiple), margins min/max
+   (percent of the binder's current margins). The solver never emits a
+   design outside them, and never violates the engine's hard floors
+   (`clampMargins`, trim minimums). Bounds persist to `localStorage` with
+   the same guarded, forward-merge pattern as the design.
+4. **Sheet and signature readout.** Always visible next to the slider:
+   the current book's sheets and signatures once settled, a quiet busy
+   state while a solve runs, and, when the target is out of reach, the
+   exact achievable count on that side with a next step (loosen a bound).
+   No silent failure, no dead end.
+5. **Applied designs are real designs.** The solver's output is set as the
+   working design: the EPIC 4 dials move to show what the solver chose, the
+   design persists through the existing `persistDesign` path, and Reset to
+   defaults still works. A manual dial change simply takes over again.
+6. **First-minute reach.** The slider works on the bundled sample with no
+   user file: open the sample, drag, watch the book re-flow. Proven in e2e.
+7. **Mobile-first, accessible, swept.** Usable at 390px with a ~44px thumb
+   and no horizontal scroll; every input labeled; readout announced via a
+   polite live region; all copy swept for banned tells.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **The paper-budget solver and "Fit into N sheets" slider (EPIC 5).** No solver
-  that searches the design space, no sheet/signature readout, no slider.
-- **Export, PDF generation, imposition, or signatures (EPIC 6).** The Export
-  button is a reserved, disabled primary slot only. Do not generate any file.
-- **Project files, named house-style presets, import/export of settings, or the
-  guided first-run walkthrough (EPIC 7).** Session persistence of the single
-  working design is in scope; everything else in EPIC 7 is not.
-- **Adding fonts beyond the curated set**, a font-upload surface, or a font
-  marketplace.
-- **InDesign-grade microtypography:** kerning-pair editing, drop-cap galleries,
-  ornaments, tracking, optical margins. The dials are exactly the nine listed
-  above.
-- **Editing the story text**, re-parsing, or any change to the `Document` model
-  or the EPUB parser.
-- **Changing `DEFAULT_DESIGN`.** The shipped default stays the system serif
-  half-letter design so EPIC 2's golden page counts and budgets are preserved.
-  The curated embeddable faces are user choices, not the default.
-- **Any runtime LLM.** The product has no text-generation feature.
+- **New typography dials beyond EPIC 4.** The bounds inputs are the
+  solver's contract (the planner's "user-set bounds"), not dials: they
+  never change the design directly. Do not add any new direct design
+  control.
+- **Cover or spine math.** No paper-thickness input, no spine width, no
+  cover surface of any kind.
+- **Server-side computation.** No server exists; the solve runs in the
+  existing Web Worker. Do not add any network path.
+- **Export, PDF generation, imposition layouts, or signature reordering
+  (EPIC 6).** The signature count here is arithmetic for the readout only.
+  The Export slot stays a disabled placeholder. `PaginationResult` keeps
+  its shape: do not add a `signatures` field to the engine's result.
+- **Project files, named presets, guided walkthrough (EPIC 7).** Bounds
+  persistence uses its own small key; nothing else is saved.
+- **Editing the story text, re-parsing, or changing the `Document` model
+  or EPUB parser.**
+- **Changing `DEFAULT_DESIGN`, the dial set, or EPIC 2's default path.**
+  A session that never touches the slider must behave byte-identically to
+  EPIC 4: same first paginate, same budgets, same golden page counts.
+- **Any runtime LLM.**
 
 ---
 
 ## 2. Technical design
 
-### 2.1 What already exists (consume; change only where §2.6/§2.7 name it)
-- `src/engine/types.ts` — `DesignSpec` (all nine dials map here), `Page`,
-  `PaginationResult`. **Unchanged.** Every dial writes an existing field; no new
-  `DesignSpec` field is added.
-- `src/engine/defaultDesign.ts` — `DEFAULT_DESIGN`. **Unchanged.** It is both the
-  shipped default and the "reset" target.
-- `src/engine/paginate.ts` — `computeMetrics(design)` (derives `columnPx`,
-  `lineHeightPx`, per-page line capacities from the design). Re-runs per design;
-  no change needed.
-- `src/engine/client.ts` — `EngineClient` / `EngineClientLike`: `load(doc)`,
-  `paginate(design, handlers)`, `dispose()`, latest-wins, publishes
-  `__BINDERY_ENGINE_TIMINGS__` on `done`. This EPIC **adds one method**
-  (`warmFonts`, §2.6) and keeps everything else intact.
-- `src/engine/protocol.ts` — worker messages. This EPIC **adds one message**
-  (`warm-fonts`, §2.6).
-- `src/engine/pagination.worker.ts` — holds the document, re-paginates per
-  `paginate`. This EPIC **adds a font-load step** before measuring a curated
-  face and a `warm-fonts` handler (§2.6).
-- `src/ui/BookPreview.tsx` — the virtualized facing-page surface. Today it owns
-  the engine and paginates `DEFAULT_DESIGN` once. This EPIC **lifts the design
-  in as a prop**, keeps the engine alive across design changes, and re-paginates
-  on change without blanking (§2.7).
-- `src/ui/pageGeometry.ts`, `src/ui/PageView.tsx`, `src/ui/Spread.tsx`,
-  `src/ui/spreads.ts`, `src/ui/bookScroller.ts`, `src/ui/runningHead.ts` — all
-  already read `design` from props and are pure over it. **Unchanged**; they
-  simply receive the live design.
-- `src/App.tsx` — the `ready` branch renders `StructureView` + `BookPreview`.
-  This EPIC swaps in a `Studio` container that owns design and lays out the
-  panel + preview (§2.8).
+### 2.1 What already exists (consume; change only where named below)
+- `src/engine/types.ts` — `DesignSpec`, `Page`, `PaginationResult`,
+  `Timings`. **Unchanged.**
+- `src/engine/engine.ts` — `runEngine` (streamed single pass, yields
+  `progress` after `FIRST_PAGES`, `tick` per chapter, terminal `done`) and
+  `driveEngine` (slicing + `isStale` cancellation via `EngineTransport`).
+  **Unchanged**; the solver drives `runEngine` generators through its own
+  transport-like loop with the same slicing and staleness rules.
+- `src/engine/paginate.ts` — `computeMetrics` (columnPx, linesPerPage per
+  design). **Unchanged**; the predictor and ladder call it.
+- `src/engine/measurer.ts` / `offscreenMeasurer.ts` — the worker's memoized
+  canvas measurer. **Unchanged.** Its (style, text) cache is what makes the
+  solver's repeated passes affordable: a candidate at an already-measured
+  font size re-breaks from Map hits alone.
+- `src/engine/client.ts` — `EngineClient` (latest-wins, timings hook
+  `__BINDERY_ENGINE_TIMINGS__`). **Gains one method** (`solve`, §2.5).
+- `src/engine/protocol.ts` — **gains one main→worker message** (`solve`)
+  and two small additions to `DoneMessage` (§2.5).
+- `src/engine/pagination.worker.ts` — **gains the solve handler** and
+  retains lightweight stats of the last completed pass (§2.6).
+- `src/ui/design/designPatch.ts` — bounds constants (`FONT_SIZE_MIN/MAX`,
+  `LINE_SPACING_*`), `clampMargins`, `affectsPagination`. **Unchanged**;
+  the ladder reuses its constants and clamps so solver output always lies
+  on the dial lattice (font on the 0.5pt grid, spacing on 0.05, margins
+  rounded per unit). No relaxation of `persistDesign` is needed.
+- `src/ui/BookPreview.tsx` — engine ownership, streamed re-flow without
+  blanking, scroll anchoring, `committedRef`. **Gains three props** and one
+  effect (§2.7); its state machine and handlers are reused, not forked.
+- `src/ui/Studio.tsx` — owns the design, persists it, warms fonts.
+  **Gains** budget state, the `BudgetSlider`, and outcome application
+  (§2.8).
+- `src/ui/ControlPanel.tsx`, `Spread`, `PageView`, `pageGeometry`,
+  `persistDesign`, fonts. **Unchanged.**
 
 ### 2.2 New file / module layout
 ```
-src/fonts/
-  catalog.ts            curated font registry (shared main + worker; no DOM):
-                        FontEntry { id, label, stack, embeddable, weights:{regular,bold}, license }
-                        SYSTEM_SERIF entry (embeddable:false, no urls) + N embeddable entries.
-                        entryForStack(stack): FontEntry | null. FONT_CATALOG: FontEntry[].
-  catalog.test.ts
-  loadFonts.ts          main-thread: loadFontFace(entry) -> Promise<void> using FontFace +
-                        document.fonts (idempotent, cached); warmCatalog() loads all embeddable
-                        faces off the critical path. No-op for SYSTEM_SERIF / when FontFace absent.
-  loadFonts.test.ts
-public/fonts/           curated woff2 files (regular + bold per face), OFL.txt, PROVENANCE.md
 src/engine/
-  fontFaces.ts          worker-safe: ensureFontLoaded(entry): Promise<void> — fetch the woff2,
-                        build FontFace(s), add to self.fonts, await load; cache by id; no-op for
-                        SYSTEM_SERIF or where FontFace/self.fonts is absent. Pure of DOM.
-  fontFaces.test.ts
-src/ui/
-  Studio.tsx            owns design state (persisted), warms fonts, lays out ControlPanel + preview
-  Studio.test.tsx
-  ControlPanel.tsx      the dials; controlled by { design, onChange, onReset }
-  ControlPanel.test.tsx
-  design/
-    trimPresets.ts      TRIM_PRESETS, presetForTrim, convertLength/unit conversion, custom validation
-    trimPresets.test.ts
-    designPatch.ts      pure setters: applyFontSize, applyLineSpacing, applyTrim, applyMargin, ...;
-                        each clamps/validates and re-derives dependent fields (e.g. lineHeightPt).
-                        affectsPagination(prev, next): boolean.
-    designPatch.test.ts
-    persistDesign.ts    loadDesign(): DesignSpec  saveDesign(design): void  (localStorage, versioned,
-                        forward-compatible merge onto DEFAULT_DESIGN, invalid -> default)
-    persistDesign.test.ts
-src/engine/protocol.ts  + WarmFontsMessage
-src/engine/client.ts    + warmFonts(fontIds: string[]): void
-src/engine/pagination.worker.ts  await ensureFontLoaded before driveEngine; handle 'warm-fonts'
-src/ui/BookPreview.tsx  design as prop; engine alive across changes; re-flow without blanking
-src/App.tsx             ready branch -> <Studio document report onReset />
-src/styles.css          control-panel + studio-layout styles (mobile-first), disabled action state
-e2e/typography.spec.ts  live re-flow within budget, trim re-mirror, font renders, 390px panel, persist
+  budget.ts            pure, shared main + worker (no DOM):
+                       PAGES_PER_SHEET, SHEETS_PER_SIGNATURE,
+                       sheetsForPages(pageCount), signaturesForSheets(sheets),
+                       BudgetBounds + DEFAULT_BOUNDS + clampBounds(raw),
+                       ladderCandidates(base, bounds): DesignSpec[] (snapped, deduped, densest first),
+                       PassStats { totalLines, openerPages, blankPages },
+                       predictPages(ref: {design, pageCount, stats}, candidate): number,
+                       SolveOutcome (shape in §2.5)
+  budget.test.ts
+  solve.ts             worker-side driver: runSolve(doc, request, measurer, transport)
+                       — predictor seed, exact counts with slicing + isStale,
+                       winner selection, result reuse (§2.6)
+  solve.test.ts
+src/ui/budget/
+  BudgetSlider.tsx     the slider, readout, and Bounds disclosure
+  BudgetSlider.test.tsx
+  persistBudget.ts     loadBounds(): BudgetBounds, saveBounds(b): void
+                       (localStorage "bindery.budget", versioned, guarded,
+                       forward-merge onto DEFAULT_BOUNDS via clampBounds)
+  persistBudget.test.ts
+src/engine/protocol.ts   + SolveMessage; DoneMessage + stats + solve?
+src/engine/client.ts     + solve(request, handlers)
+src/engine/pagination.worker.ts  + solve handler; retain last-pass stats
+src/ui/BookPreview.tsx   + budget prop, onSolveOutcome, onSettled
+src/ui/Studio.tsx        + budget state, budgetBase snapshot, BudgetSlider
+src/styles.css           slider (44px thumb), readout, bounds disclosure
+e2e/budget.spec.ts       drag budget, tolerance, bounds respect, clamped
+                         report, sample reach, 390px
 ```
-No new runtime dependency. React, the existing engine, and bundled woff2 files
-are sufficient. Do not add a form library, a state-management library, or a
-font-loading library.
+No new runtime dependency. Do not add a math/solver library or a state
+library; the search is a few dozen arithmetic evaluations and at most a
+handful of engine passes.
 
-### 2.3 The dials → `DesignSpec` mapping (exact)
-Each control is a controlled input driven by the active `DesignSpec`; on change
-it produces a new `DesignSpec` via a pure setter in `design/designPatch.ts` and
-calls `onChange(next)`. Setters clamp to the bounds below (input validation at
-the boundary) and never emit a design the engine cannot lay out.
+### 2.3 The density ladder (parameterization — exact)
+The solver moves exactly three levers; everything else (trim, font family,
+chapter opening, headers, widow control, hyphenation) is carried verbatim
+from the base design.
 
-| Dial | Field(s) written | Control | Bounds / rules |
-|---|---|---|---|
-| Page size | `trim = {w,h,unit}` | Select of presets + "Custom size" | Presets set `trim` whole. Custom: `w`,`h` numeric > 0, plus unit toggle. Enforce `inner+outer < w` and `top+bottom < h` after any change (see Margins). |
-| Font | `font.family` | Select over `FONT_CATALOG` | Value is the entry's `stack`. Default entry = system serif. |
-| Font size | `font.sizePt` | Number stepper | 7–18 pt, step 0.5. Re-derives `lineHeightPt` from the current spacing multiple. |
-| Line spacing | `font.lineHeightPt` | Number stepper (multiplier) | Multiple 1.0–2.5, step 0.05. Stored as `lineHeightPt = round(sizePt * multiple, 0.1)`. On load, the control shows `lineHeightPt / sizePt`. |
-| Margins | `margins.{inner,outer,top,bottom}` | Four number inputs, unit = `trim.unit` | Each ≥ 0.15 in (or 4 mm) and small enough that `inner+outer < w` and `top+bottom < h`; clamp to keep `columnPx > 0` and at least one text line. |
-| Chapter opening | `chapterOpening.topDropPt` | Select: Deep (72) / Standard (36) / Minimal (0) | Named set only (no free number). |
-| Chapters open recto | `chapterOpening.startRecto` | Toggle | Off means chapters open on whichever side falls next (no blank verso inserted). |
-| Left/right header | `runningHeader.verso` / `runningHeader.recto` | Two selects | Options → stored template: None → `""`, Author → `"{author}"`, Title → `"{title}"`, Chapter → `"{chapter}"`. **Render-only** (see §2.7). |
-| Widow & orphan | `widowControl` | Toggle | Boolean. |
-| Hyphenation | `hyphenation` | Toggle | Boolean. |
+| Lever | Range at t=0 (densest) → t=1 (roomiest) | Snap |
+|---|---|---|
+| `font.sizePt` | `bounds.fontMinPt` → `bounds.fontMaxPt` | 0.5 pt (`FONT_SIZE_STEP`) |
+| line-spacing multiple | `bounds.spacingMin` → `bounds.spacingMax`; stored as `lineHeightPt = round(sizePt × multiple, 0.1)` | 0.05 (`LINE_SPACING_STEP`) |
+| margin scale | `bounds.marginsMinPct/100` → `bounds.marginsMaxPct/100`, multiplying each of the base design's four margins, then `clampMargins(trim, ·)` | per-unit rounding (0.01 in / 1 mm) via `clampMargins` |
 
-`affectsPagination(prev, next)` returns `false` only when the sole difference is
-`runningHeader.verso`/`recto`/`showOnOpener`; otherwise `true`. This is the
-switch §2.7 uses to skip the engine for header-only edits.
+`ladderCandidates(base, bounds)` samples t finely (e.g. 1/128 steps),
+snaps each sample to the lattice above, deduplicates identical designs,
+and returns the distinct candidates ordered densest → roomiest. The list
+is small (typically well under 100) and pure: same inputs, same list.
+Because all three levers grow together with t, page count along the list
+is monotone non-decreasing up to ±1–2 pages of snap and widow noise; the
+exact-count step (§2.6) absorbs that noise.
 
-Unit conversion: when a custom trim's unit changes (or a preset in a different
-unit is chosen while custom values exist), convert `w`,`h`, and all four
-`margins` to the new unit preserving physical length (`in↔mm`), rounded to 2
-decimals for `in` and 0 decimals for `mm`, so the physical page does not jump.
-Presets carry their own unit and values verbatim.
+**Bounds shape and defaults** (`BudgetBounds`):
+```ts
+{ fontMinPt: 9, fontMaxPt: 13,       // hard rails: FONT_SIZE_MIN..FONT_SIZE_MAX (7..18)
+  spacingMin: 1.15, spacingMax: 1.6, // hard rails: LINE_SPACING_MIN..MAX (1.0..2.5)
+  marginsMinPct: 75, marginsMaxPct: 125 } // hard rails: 50..150
+```
+`clampBounds` clamps each value to its rails and enforces min ≤ max by
+raising the max to the min when they cross (deterministic, no swap).
+Editing a bound in the UI flows through `clampBounds`.
 
-### 2.4 Curated fonts (`src/fonts/catalog.ts`, `public/fonts/`)
-- Bundle the **system serif default** (the existing
-  `'Georgia, "Times New Roman", serif'` stack; `embeddable: false`, no files)
-  plus **at least three** open-licensed, embeddable book faces as woff2. Use SIL
-  OFL faces so redistribution and later PDF embedding are unencumbered.
-  Recommended set (all OFL, Latin subset, regular + bold): **EB Garamond**,
-  **Libre Baskerville**, **Source Serif 4**, **Lora**. Two weights per face are
-  required because headings measure and render bold (`computeMetrics.headingStyle`
-  sets `bold: true`).
-- Each `FontEntry.stack` is the primary family plus a system fallback, e.g.
-  `'"EB Garamond", Georgia, serif'`. The control writes this exact string to
-  `font.family`; `entryForStack` matches it back to the entry (and its files).
-- Store the woff2 files under `public/fonts/` (stable, same-origin URLs served by
-  Vite in dev and nginx in prod). Add the OFL license text as
-  `public/fonts/OFL.txt` and a `public/fonts/PROVENANCE.md` recording each file's
-  source, version, and license, mirroring the sample book's provenance note.
-  Credit the fonts in the README.
-- Fetching same-origin app font files is not the user's file leaving the browser;
-  it does not violate the privacy norm and works offline after first load. Say so
-  in a code comment so no reviewer mistakes it for an upload path.
+**Base design (`budgetBase`).** Margin percentages are relative to the
+binder's own margins, so repeated solves must not compound. `Studio` keeps
+a `budgetBase` snapshot: the working design as of the last *manual* change
+(any dial edit, Reset, or initial load). Solver outcomes update the working
+design but never `budgetBase`. Every solve request carries `budgetBase` as
+its base; its non-lever fields are also the ones carried into candidates.
 
-### 2.5 On-screen font loading (`src/fonts/loadFonts.ts`, main thread)
-- `loadFontFace(entry)` builds a `FontFace` per weight from the entry's URLs,
-  calls `.load()`, adds it to `document.fonts`, and resolves; it is idempotent
-  (cache by id) and a no-op for `SYSTEM_SERIF` and where `FontFace` is undefined
-  (jsdom). `warmCatalog()` loads every embeddable face and swallows individual
-  failures (a missing file degrades to the fallback stack; it never throws).
-- **Warm off the critical path.** `Studio` calls `warmCatalog()` after first
-  paint (e.g. an idle callback or a post-mount effect that does not block the
-  initial `paginate`), and eagerly warms on first focus/open of the Font select,
-  so selecting a face re-flows from an already-loaded font without a load stall.
-  Warming must never add a main-thread long task that trips EPIC 2's 400ms
-  long-task budget; rely on async `FontFace.load()`, do not force synchronous
-  layout.
+### 2.4 Predictor (search accelerator, never user-visible)
+`predictPages(ref, candidate)` estimates a candidate's page count from the
+last settled pass:
 
-### 2.6 Worker-side font loading (accurate measurement) — additive engine change
-The worker measures with `OffscreenCanvas`. Canvas uses a font only if it is
-present in the worker's `FontFaceSet`; measuring an unloaded curated family
-silently falls back to a default face and produces wrong line breaks. So:
+- `candLines = ref.stats.totalLines × (candSizePt / refSizePt) × (refColumnPx / candColumnPx)`
+  (advance widths scale close to linearly with font size for one family;
+  column width comes from `computeMetrics`).
+- `overhead = ref.pageCount − ceil(ref.stats.totalLines / refBodyLinesPerPage)`
+  (opener capacity loss, blank versos, per-chapter remainders; treated as
+  design-independent).
+- `predicted = max(1, ceil(candLines / candBodyLinesPerPage) + overhead)`.
 
-- **`src/engine/fontFaces.ts`** — `ensureFontLoaded(entry): Promise<void>`:
-  for an embeddable entry, `fetch` each weight's woff2, `new FontFace(family,
-  bytes, { weight })`, `await face.load()`, `self.fonts.add(face)`, cache by id.
-  No-op for `SYSTEM_SERIF` and where `FontFace`/`self.fonts` is absent. Pure of
-  DOM so it unit-tests with a stubbed fetch/FontFace.
-- **`pagination.worker.ts`** — before `driveEngine`, resolve the design's font
-  via `entryForStack(design.font.family)` and `await ensureFontLoaded(entry)`.
-  For the system serif this resolves synchronously to a no-op, so the default
-  path adds nothing. For a curated face already warmed, the cached promise
-  resolves immediately. Only a cold curated face pays a one-time load, which
-  warming (§2.5) has already avoided in the normal flow. Honor latest-wins: if
-  `requestId !== currentRequestId` after the await, drop the request.
-- **`protocol.ts`** — add `WarmFontsMessage { type: "warm-fonts"; fontIds:
-  string[] }`. **`client.ts`** — add `warmFonts(fontIds)` that posts it; the
-  worker handles it by `ensureFontLoaded` for each id (fire-and-forget, no
-  reply). `Studio` may call `client.warmFonts([...])` when warming so the worker
-  and the document warm together. Keep `EngineClientLike` and the fake engines in
-  tests in sync with the new method (optional method, defaulted no-op in fakes).
-- **Non-regression:** the default/system path posts no `warm-fonts` and awaits a
-  no-op, so `pagination.worker.ts`'s existing comment (system serif resolves
-  synchronously, no `fonts.ready` gate) stays true. EPIC 2's budget,
-  long-task, and determinism specs must pass unchanged.
+The formula's job is only to pick which few candidates get exact counts;
+its constants may be refined during a solve by re-anchoring `ref` to the
+most recent exact count (§2.6 step 4). Unit tests pin its behavior with
+`SyntheticMeasurer`-derived stats, not against real fonts.
 
-### 2.7 Live re-flow without blanking (`BookPreview.tsx`)
-Change `BookPreview`'s props to `{ document, design, onReset, createEngine? }`.
-Keep the engine alive across design changes; re-paginate on design change.
-
-- **Engine lifecycle.** One effect keyed on `document` creates the engine and
-  calls `load(document)`; cleanup disposes it. The engine is **not** recreated on
-  a design change.
-- **Pagination effect** keyed on `design` (and gated on the engine existing):
-  call `engine.paginate(design, handlers)`. Coalesce rapid changes with a short
-  rAF/`~16ms` debounce; the worker's latest-wins drops superseded passes.
-- **State.**
+### 2.5 Protocol and client (additive)
+- **`SolveMessage`** (main → worker):
   ```ts
-  type State =
-    | { status: "laying-out" }                                   // initial, no result yet
-    | { status: "first-spread"; pages: Page[]; design: DesignSpec }
-    | { status: "ready"; result: PaginationResult; design: DesignSpec; reflowing: boolean }
-    | { status: "empty" }
-    | { status: "error" };
+  { type: "solve"; requestId: number; targetSheets: number;
+    base: DesignSpec; bounds: BudgetBounds }
   ```
-  Render each page with the **design that produced it** (carried in state), never
-  a half-applied design, so there is no transient overflow.
-- **On a design change while `ready`:** if `affectsPagination(prev, next)` is
-  `false`, update the committed `design` in place and re-render (no `paginate`) —
-  header changes are instant. If `true`, set `reflowing: true` (keep the current
-  `result` + its design mounted), call `paginate(next)`; on `done`, swap in the
-  new `result` + `next` design and clear `reflowing`; on `progress`, you may
-  repaint the leading spread from `firstPages` for top-of-book feedback. Never
-  drop to `laying-out` and never reset `scrollTop` on a re-flow.
-- **Reflow affordance.** While `reflowing`, set `aria-busy` on the preview region
-  and show a quiet, non-layout-shifting indicator. This plus the instant control
-  state is the sub-100ms perceptible feedback for a mid-book scroll position; the
-  correct geometry arrives on settle (streamed early pages within 100ms).
-- **Scroll anchoring.** Before swapping to a new result, capture the scroll
-  fraction (`scrollTop / max(1, totalPx - viewportPx)`) and restore it after the
-  swap, so the binder stays near their place as the page count changes. Fraction-
-  based anchoring is sufficient for this EPIC; chapter-precise anchoring is not
-  required.
-- **empty/error** unchanged from EPIC 3 (zero-page `done` → empty; `onError` →
-  error), including their swept copy.
+  Enters the same `currentRequestId` latest-wins stream as `paginate`:
+  a newer paginate or solve makes an in-flight solve stale.
+- **`DoneMessage` gains two fields** (present on every done, paginate or
+  solve):
+  - `stats: PassStats` — `{ totalLines, openerPages, blankPages }`,
+    tallied while pages are assembled (cheap, no extra pass).
+  - `solve?: SolveOutcome` — present only when the request was a solve:
+    ```ts
+    { targetSheets: number;
+      sheets: number;                  // exact, = sheetsForPages(result.pageCount)
+      design: DesignSpec;              // the applied (winner) design
+      achieved: "hit" | "closest" | "clamped-dense" | "clamped-roomy";
+      passes: number }                 // exact counts run, for tests/telemetry
+    ```
+    `hit`: |sheets − target| ≤ 1 (the stated tolerance). `closest`: bounds
+    allow the region but the lattice has no design within tolerance; the
+    nearest real count was applied. `clamped-dense` / `clamped-roomy`: the
+    target lies beyond the densest/roomiest end of the ladder; the boundary
+    design was applied and `sheets` is its exact count (this is the
+    "achievable range" report: the exact reachable count on the side the
+    user pushed past).
+- **`EngineClient.solve(request, handlers)`** — dispatches like `paginate`
+  (sets the active request, measures timings from dispatch, publishes to
+  `__BINDERY_ENGINE_TIMINGS__` on done, so e2e reads solve timings from the
+  existing hook). `PaginateHandlers.onDone` gains the optional trailing
+  data: `onDone(result, timings, stats, solve?)`. `EngineClientLike` adds
+  `solve?` as optional; test fakes default it to a no-op or scripted
+  responder. If `paginate` is called before `load` completes, the existing
+  queue behavior stands; `solve` may assume the book is loaded because the
+  UI only enables the slider after the first settle (worker still guards:
+  a solve with no held document posts the existing error message).
 
-### 2.8 Studio container & app wiring (`Studio.tsx`, `App.tsx`)
-- **`Studio.tsx`** owns the design: initialize from `persistDesign.loadDesign()`
-  (which returns `DEFAULT_DESIGN` when nothing valid is stored). It renders the
-  `ControlPanel` and `BookPreview` (and keeps `StructureView` as a subordinate
-  "what we read" section — do not remove EPIC 1's honest parse/report view).
-  `onChange(next)` updates state, calls `saveDesign(next)` (debounced), and flows
-  `next` into `BookPreview`. `onReset` sets `DEFAULT_DESIGN` and saves it.
-  Warming (§2.5) lives here.
-- **Layout.** Mobile-first. At ≤ ~720px, a single column: the control panel
-  above the scrolling preview, each control full-width. At wider widths, the
-  panel sits in a column beside the preview (the preview keeps its own bounded
-  scroll viewport from EPIC 3). No horizontal scroll at 390px.
-- **`App.tsx`** `ready` branch renders `<Studio document={state.document}
-  report={state.report} onReset={reset} />` in place of the current
-  `StructureView` + `BookPreview` pair. `reset` is unchanged.
+### 2.6 The solve, worker-side (`src/engine/solve.ts`)
+On `solve` the worker, after `ensureFontLoaded` for the base's face
+(cached no-op in the normal flow, staleness re-checked after the await):
 
-### 2.9 Control panel structure & radical simplicity (`ControlPanel.tsx`)
-- **One primary action slot: Export.** Render it as the visually dominant button,
-  **disabled** in this EPIC (export is EPIC 6). Do not implement export. Pair it
-  with a short present-tense line stating what it does (see §4). Every dial is
-  visibly subordinate to this slot. A second, real secondary action is **Reset**
-  (ghost/subdued), which returns to `DEFAULT_DESIGN`.
-- **Grouping.** Use `<fieldset>`/`<legend>` for related controls (Page size +
-  custom dimensions; Margins; Running headers), so structure is semantic and
-  screen-reader navigable. Keep the panel short: labels are as terse as they can
-  be while unambiguous (§7 of the bar). No helper paragraphs beyond the single
-  Export line and unit hints.
-- **Controls are native** (`<select>`, `<input type="number">`,
-  `<input type="checkbox">`, `<button>`), each with an associated `<label>`,
-  min/max/step where numeric, and a unit affordance where relevant. Native
-  controls give keyboard reach, focus, and ~44px targets for free with the
-  existing token CSS; size them to ≥44px.
+1. **Reference stats.** Use the retained stats of the last completed pass
+   (the worker stores `{ design, pageCount, stats }` after every done). If
+   none exist (defensive; the UI gates on first settle), run one exact
+   count of `base` first and use it as the reference.
+2. **Ladder + prediction.** Build `ladderCandidates(base, bounds)`;
+   predict every candidate's sheets (pure arithmetic). If the target is
+   beyond the predicted densest end, the working candidate is index 0; if
+   beyond the roomiest, the last index; otherwise the best-predicted
+   candidate.
+3. **First feedback.** Start the working candidate's `runEngine` pass and
+   forward its first `progress` event to the main thread (this is the
+   sub-100ms streamed feedback). Continue draining it to completion as an
+   exact count, slicing every ~12ms with the same yield-and-`isStale`
+   discipline as `driveEngine`; abandon promptly when superseded.
+4. **Verify and correct.** After each exact count, re-anchor the predictor
+   to that count and re-pick. Run further exact counts only while the best
+   real result is off by more than 1 sheet, the re-pick names an uncounted
+   candidate, and fewer than `MAX_SOLVE_PASSES = 3` counts have run.
+   Track the best real result: smallest |sheets − target|; ties prefer
+   sheets ≤ target (fits the paper the binder has), then the roomier
+   design.
+5. **Finish.** The winner's full `PaginationResult` was already assembled
+   by its count pass (results are kept per counted candidate; at most 3
+   are alive, then released). Post `progress` with the winner's first
+   pages (skip when the winner was the streamed candidate from step 3),
+   then `done` with the winner's result, stats, and the `SolveOutcome`
+   (`achieved` per §2.5: clamped when step 2 chose a boundary because the
+   target was beyond it; else hit/closest by the ±1-sheet tolerance).
+   Retain the winner as the new last-pass stats.
 
-### 2.10 Persistence (`design/persistDesign.ts`)
-- `saveDesign(design)` writes `JSON.stringify({ v: 1, design })` to
-  `localStorage["bindery.design"]`. `loadDesign()` parses it and returns a design
-  built by **merging the stored fields forward onto `DEFAULT_DESIGN`**: unknown
-  keys ignored, missing keys defaulted, out-of-range values clamped by the same
-  bounds as §2.3. Any parse/shape error returns `DEFAULT_DESIGN` (never throws,
-  never blocks first render). This is the forward-only "migration" contract: new
-  fields added by later EPICs default cleanly against an old stored blob, and an
-  old app ignores unknown stored fields.
-- **Privacy.** The stored value is design only. It contains no file bytes, no
-  file name, no book text, no PII. Do not persist the `Document` or any parse
-  output. Guard all `localStorage` access in `try/catch` (private-mode / disabled
-  storage degrades to in-memory, never crashes).
+**Special case, free of engine work:** if `targetSheets` equals the sheets
+of the last settled pass and that pass's design is the current one, the
+worker replies immediately with the retained result and `achieved: "hit"`.
+Dragging to where you already are never redesigns the book.
 
-### 2.11 Accessibility & determinism
-- Every input has a programmatic label; related groups use `fieldset`/`legend`;
-  the panel is a labeled region (`aria-label="Book design"`). Visible focus comes
-  from the existing `:focus-visible` rule. Keyboard reaches every control and the
-  Reset button; the disabled Export is `disabled` with an accessible name.
-- The preview region keeps its EPIC 3 label, keyboard scroll, and sr-only page-
-  count summary; `aria-busy` reflects `reflowing`.
-- Pure setters and `computeMetrics`/`pagePlacement` are deterministic: the same
-  design yields the same pages and the same placement. No `Math.random`/
-  `Date.now` in layout or setters. No file text in any error, log, or timing
-  hook.
+**Determinism.** No randomness, no clocks in decisions (slicing timing
+affects only yield cadence, never the chosen winner: the candidate order,
+prediction, correction rule, and tie-breaks are pure). Same document, base,
+bounds, and target always apply the same design.
+
+**Budget arithmetic** (why this fits ~2s on 300k words): the predictor
+costs microseconds; exact counts run against a warm word-width cache, so
+they are Map-lookup line breaking plus page assembly, no canvas calls at
+already-seen sizes and one cache fill at a new size; at most 3 counts run
+and the winner's result is reused rather than re-laid-out, so the only
+post-search cost is the structured clone of one result. If measurement on
+the 300k fixture still exceeds the budget, reduce `MAX_SOLVE_PASSES` to 2
+and/or replace the worker's `setTimeout(0)` yield with a `MessageChannel`
+yield (worker-internal, both paths' behavior covered by existing tests).
+
+### 2.7 BookPreview wiring (additive props, no fork)
+`BookPreview` gains:
+```ts
+budget?: { target: number; base: DesignSpec; bounds: BudgetBounds; seq: number } | null;
+onSolveOutcome?: (outcome: SolveOutcome) => void;
+onSettled?: (settled: { design: DesignSpec; pageCount: number; stats: PassStats }) => void;
+```
+- **Solve effect**, keyed on `budget?.seq`: debounce ~16ms (the existing
+  `REFLOW_DEBOUNCE_MS` pattern), set `reflowing` on the mounted state, then
+  `engine.solve({targetSheets, base, bounds}, handlers)` with the SAME
+  handlers as `startPaginate` plus outcome handling. Latest-wins in the
+  client and worker supersedes older drags automatically.
+- **On solve done:** before committing, set
+  `committedRef.current = solve.design` and pass the *same object* to
+  `onSolveOutcome`. Studio then calls `setDesign(solve.design)`; the
+  design-change effect sees `prev === design` (reference equality) and
+  does nothing, so the solved result is never re-paginated. Commit the
+  result exactly as a paginate done does (`ready`, producing design =
+  `solve.design`, scroll anchor restored, empty/error paths unchanged).
+- **`onSettled`** fires on every done (paginate or solve) with the design,
+  page count, and stats from the message. Studio uses it for the readout
+  and the slider range; nothing is recomputed from the pages array on the
+  main thread.
+- A manual design change while a solve is in flight follows the existing
+  path: the paginate supersedes the solve (higher request id), the solve's
+  handlers are dropped by the client, and no stale outcome arrives.
+
+### 2.8 Studio and the slider surface
+- **State.** `Studio` adds: `bounds` (init `loadBounds()`), `budgetBase`
+  (init = the loaded design; updated on every manual `onChange` and on
+  Reset, never on solve outcomes), `settled` (latest `onSettled` payload,
+  null until first settle), `budgetRequest` (the `budget` prop value;
+  bumped `seq` per slider commit), and `solving` (true from slider commit
+  until outcome or supersession).
+- **Outcome application.** `onSolveOutcome(outcome)`: `setDesign(
+  outcome.design)` (same object, per §2.7), persist it through the existing
+  debounced `saveDesign`, store the outcome for the readout, clear
+  `solving`. The EPIC 4 dials now display the solver's choices, because
+  they are controlled by the same design.
+- **Bounds edits** flow through `clampBounds`, persist via `saveBounds`,
+  and update the slider range; they never touch the design or trigger a
+  solve by themselves.
+- **Slider range.** min/max = predicted sheets at the ladder's ends for
+  (`budgetBase`, `bounds`, `settled` stats), floored/ceiled outward,
+  clamped to ≥ 1, and widened if needed to include the current settled
+  sheet count. Endpoints are estimates for drag range only; outcomes stay
+  exact via clamping (§2.5). When min equals max (a very small book), the
+  slider renders disabled with the normal readout.
+- **Layout.** `BudgetSlider` renders at the top of the control column,
+  above `ControlPanel`, inside the same `.studio__work` flow: first thing
+  a binder meets on mobile, beside the preview on desktop. Until the first
+  settle it renders disabled with the readout showing the laying-out state.
+- **`BudgetSlider.tsx` props:**
+  ```ts
+  { min, max, value: number;            // value = last outcome/settled sheets, or drag value while dragging
+    disabled: boolean;
+    solving: boolean;
+    readout: Readout;                    // discriminated: settled | solving | clamped | closest
+    bounds: BudgetBounds;
+    onTarget(sheets: number): void;      // fired per input event; Studio bumps seq
+    onBounds(next: BudgetBounds): void }
+  ```
+  The range input updates its thumb and the visible target text
+  synchronously on `input` (that is the in-frame control feedback), sets
+  `aria-valuetext` to "N sheets", and carries a real label. The readout is
+  a polite `aria-live` region. The Bounds disclosure is a native
+  `<details><summary>Bounds</summary>…</details>` holding six labeled
+  number inputs (§4 for labels), each ≥ 44px, wrapping cleanly at 390px.
+
+### 2.9 Persistence (`src/ui/budget/persistBudget.ts`)
+`saveBounds` writes `{ v: 1, bounds }` to `localStorage["bindery.budget"]`;
+`loadBounds` parses, forward-merges unknown/missing keys onto
+`DEFAULT_BOUNDS`, clamps through `clampBounds`, and returns defaults on any
+error. All access is try/caught (private mode degrades silently). The
+stored value is bounds only: no target, no file data, no book text, no PII.
+The working design the solver produced persists through the existing
+`bindery.design` path untouched, because every solver output is a valid
+dial-lattice design (§2.3).
+
+### 2.10 Accessibility and determinism
+- Slider: `<label>` plus visible value; `aria-valuetext` in sheets; 44px
+  thumb; keyboard arrows adjust by 1 sheet and commit like a drag.
+- Readout: single polite live region; `aria-busy` on the preview during a
+  solve comes free from the existing `reflowing` flag.
+- Bounds: six labeled native inputs inside `fieldset`/`legend` within the
+  disclosure; focus visible via the existing `:focus-visible` rule;
+  keyboard reaches everything including the summary toggle.
+- Determinism: `budget.ts` and `solve.ts` are pure over their inputs; no
+  `Date.now`/`Math.random` in any decision; the same drag on the same book
+  always lands the same design and readout. No book text in any new
+  message, log, or error.
 
 ---
 
 ## 3. Ordered task list (each maps to acceptance criteria)
 
-### T1 — Pure design logic (`design/`)
-`trimPresets.ts`, `designPatch.ts`, `persistDesign.ts` with tests. All pure,
-jsdom-safe, no React, no worker.
-**AC:** `typecheck`/`lint` pass. Presets set `trim` whole; unit conversion
-preserves physical length across `in↔mm`. Each setter clamps to §2.3 bounds and
-keeps `columnPx > 0` with ≥1 body line; `applyFontSize` re-derives `lineHeightPt`
-from the current multiple; `applyLineSpacing` sets `lineHeightPt = round(sizePt *
-multiple, 0.1)`. `affectsPagination` is `false` only for header-only diffs.
-`loadDesign` merges forward onto `DEFAULT_DESIGN`, clamps out-of-range values,
-and returns the default for malformed/empty/absent storage; `saveDesign` round-
-trips through `loadDesign`.
+### T1 — Pure budget math (`src/engine/budget.ts`, `persistBudget.ts`)
+Sheet/signature arithmetic, `BudgetBounds` + `clampBounds` + defaults,
+`ladderCandidates`, `predictPages`, `SolveOutcome` type; bounds
+persistence. All pure, jsdom-safe.
+**AC (Vitest):** `sheetsForPages` and `signaturesForSheets` match hand
+computations including edges (0/1 pages → 1 sheet floor honored, exact
+multiples); `clampBounds` clamps to rails and resolves min>max
+deterministically; `ladderCandidates` output is deduped, densest-first,
+every candidate on the dial lattice (font 0.5pt grid, spacing 0.05,
+margins per-unit rounded, `clampMargins` respected) and inside the given
+bounds, non-lever fields carried verbatim from base; `predictPages` is
+exact when candidate = reference and scales in the right direction for
+size/column/leading changes; `loadBounds`/`saveBounds` round-trip, merge
+forward, clamp, and never throw with storage absent or poisoned.
 
-### T2 — Font catalog + loaders (`src/fonts/`, `src/engine/fontFaces.ts`)
-Add `catalog.ts` (system serif + ≥3 embeddable OFL faces, regular + bold),
-`loadFonts.ts` (main), `fontFaces.ts` (worker-safe), the woff2 files, `OFL.txt`,
-and `PROVENANCE.md`. Tests with stubbed `fetch`/`FontFace`.
-**AC:** `entryForStack` round-trips each catalog `stack`; `loadFontFace` and
-`ensureFontLoaded` are idempotent, no-op for the system serif and where
-`FontFace` is absent, and cache by id; `warmCatalog` swallows a per-face failure
-without throwing. woff2 files exist and are OFL-licensed with provenance
-recorded.
+### T2 — Worker solve (`solve.ts`, `protocol.ts`, `client.ts`, worker)
+`SolveMessage`, `DoneMessage.stats` + `solve`, `EngineClient.solve`,
+last-pass stats retention, and `runSolve` with slicing, staleness, the
+correction loop, tie-breaks, and winner reuse.
+**AC (Vitest, `SyntheticMeasurer` + fake transport):** every `done` now
+carries stats whose `totalLines` matches the result's pages; a solve
+toward an in-range target applies a design within ±1 sheet with
+`achieved: "hit"` and `passes ≤ 3`; a target below the densest end
+applies the t=0 boundary design with `achieved: "clamped-dense"` and its
+exact sheets (mirror for `clamped-roomy`); for a grid of targets across
+the range, every applied design and every counted candidate respects the
+bounds and hard floors (never violated to get closer); a newer request id
+arriving mid-count abandons the solve with no further posts; target ==
+current sheets with unchanged design replies from the retained result
+without an engine pass; two identical solves yield identical outcomes.
+EPIC 2's engine/worker suites pass unchanged.
 
-### T3 — Worker font wiring (`protocol.ts`, `client.ts`, `pagination.worker.ts`)
-Add `warm-fonts` to the protocol, `warmFonts` to the client and
-`EngineClientLike`, and the `await ensureFontLoaded` step before `driveEngine`
-plus the `warm-fonts` handler in the worker, honoring latest-wins after the await.
-**AC (Vitest with a fake worker/transport where the engine is unit-tested):** the
-system-serif paginate path adds no font fetch and no await beyond a resolved no-
-op; a curated-face paginate awaits `ensureFontLoaded` before measuring; a stale
-request after the await is dropped. EPIC 2's engine/worker unit tests still pass.
+### T3 — BookPreview budget wiring (`BookPreview.tsx`)
+The `budget` prop effect (debounced), shared done handling with
+`committedRef` pre-set and object-identity outcome flow, `onSettled` on
+every done.
+**AC (Vitest, fake engine):** bumping `budget.seq` calls `engine.solve`
+once (debounced) with target, base, and bounds; during the solve the
+mounted book stays (bounded node count) and `aria-busy` is set; on a solve
+done the new result renders with the winner design, scroll anchoring runs,
+and `onSolveOutcome` receives the same design object later passed back as
+the `design` prop WITHOUT triggering another paginate; `onSettled` fires
+with pageCount and stats on both paginate and solve dones; empty/error
+paths and copy unchanged.
 
-### T4 — BookPreview live re-flow (`BookPreview.tsx`)
-Lift `design` to a prop; keep the engine alive across design changes; re-paginate
-on change without blanking or resetting scroll; carry the producing design in
-state; skip the engine for header-only changes; add the `reflowing` affordance
-and fraction-based scroll anchoring.
-**AC (Vitest, fake engine):** changing `design` calls `paginate` again with the
-new design but does **not** recreate/dispose the engine or drop to `laying-out`;
-a header-only change re-renders **without** calling `paginate`; during re-flow the
-last result stays mounted (bounded node count) and `aria-busy` is set; on `done`
-the new result + design swap in; the empty/error paths and copy are unchanged.
+### T4 — BudgetSlider (`BudgetSlider.tsx`)
+Slider, target text, readout states, Bounds disclosure with clamped
+editing.
+**AC (Vitest + Testing Library):** the thumb and visible target update in
+the same event as an input change and `onTarget` fires with the integer
+sheet value; keyboard arrows commit; `aria-valuetext` reads "N sheets";
+disabled state before first settle; each readout variant renders its §4
+string exactly (settled, solving, closest, clamped both sides) inside one
+polite live region; bounds inputs are labeled, fire `onBounds` through
+`clampBounds` (crossed min/max resolved), and never emit values outside
+the rails; a copy-sweep test over the component's strings finds no em/en
+dash, no banned vocabulary, no negative phrasing.
 
-### T5 — ControlPanel (`ControlPanel.tsx`)
-Build every dial in §2.3 as a native, labeled, controlled input; group related
-controls in fieldsets; render the disabled primary Export slot and the Reset
-secondary; wire custom-trim inputs to appear only in "Custom size".
-**AC (Vitest + Testing Library):** each control reflects the active design and,
-on change, calls `onChange` with the correctly-patched design (assert a
-representative change per dial); selecting a preset sets `trim` whole; "Custom
-size" reveals width/height/unit; Reset calls `onReset`; Export is present and
-disabled; every input has an accessible label; a copy-sweep test over the panel's
-strings finds no `—`/`–`, no banned vocabulary, no negative phrasing.
+### T5 — Studio integration (`Studio.tsx`, styles)
+Budget state, `budgetBase` snapshot rules, outcome application +
+persistence, slider range derivation, layout and CSS.
+**AC (Vitest):** a slider commit sets the `budget` prop with the CURRENT
+`budgetBase` and bounds; a solve outcome sets the design (dials reflect
+the solver's font size), persists via `saveDesign`, and does not move
+`budgetBase`; a manual dial change updates `budgetBase` and clears any
+pending solve display state; bounds edits persist via `saveBounds` and
+re-derive the slider range; range includes the current settled sheets and
+collapses to a disabled slider when min == max; existing `Studio` and
+`App` suites pass.
 
-### T6 — Studio wiring + persistence + warming (`Studio.tsx`, `App.tsx`, styles)
-Introduce `Studio`, own the design (init from `loadDesign`), persist on change
-(debounced `saveDesign`), warm fonts off the critical path, lay out panel +
-preview mobile-first, retain `StructureView`, and swap `Studio` into `App`'s
-`ready` branch. Add control-panel/studio CSS.
-**AC (Vitest):** `App.test.tsx`/`states.test.tsx` still pass; the ready state
-renders the control panel + `BookPreview` (+ `StructureView`); a change persists
-via `saveDesign` and a remount reads it back through `loadDesign`; warming does
-not block the initial `paginate`. `typecheck`/`lint`/`test` green.
+### T6 — e2e budget harness (`e2e/budget.spec.ts`)
+Against the production build, Chromium:
+- **Budget on 300k:** open Middlemarch, settle, read current sheets from
+  the readout; drag to ~80% of current; read
+  `__BINDERY_ENGINE_TIMINGS__`: `firstFeedbackMs ≤ 100`,
+  `settleMs ≤ 2000`; readout sheets within ±1 of target; a page leaf
+  stayed mounted throughout and scroll position was preserved.
+- **Solver honesty:** in Bounds, raise font min to equal font max and
+  narrow spacing to one step; drag to a target far below the reachable
+  range; assert the clamped readout appears with a concrete sheet count,
+  the Font size dial still shows a value inside [min, max], and no margin
+  input shows less than the floor.
+- **Dials follow the solver:** after a successful solve, the Font size
+  and Line spacing inputs display the solver's chosen values, and a
+  reload restores them (existing design persistence).
+- **Sample, first minute:** from a fresh page, open the sample, drag the
+  slider once, assert the readout updates to a real sheet count and the
+  preview re-flowed, all within the test's default timeout.
+- **390px:** slider, readout, and opened Bounds usable at 390×780 with no
+  horizontal scroll.
+**AC:** all pass; `pagination.spec.ts`, `preview.spec.ts`, and
+`typography.spec.ts` pass unchanged.
 
-### T7 — e2e typography harness (`e2e/typography.spec.ts`)
-Drive the production build against Middlemarch (300k):
-- **Live re-flow within budget:** change a dial (e.g. font size), then read
-  `__BINDERY_ENGINE_TIMINGS__` for the re-flow and assert `firstFeedbackMs ≤ 100`
-  and `settleMs ≤ 2000`; assert the preview never emptied (a page leaf stays
-  mounted throughout) and scroll position was preserved.
-- **Trim re-mirror:** switch page size and assert verso/recto text offsets still
-  mirror (recto offset > verso) and the column width changed.
-- **Font renders:** select a curated face and assert a mounted line's computed
-  `font-family` resolves to that face (and `document.fonts.check` for it is true).
-- **390px panel:** at 390px the panel is usable with no horizontal scroll
-  (`scrollWidth ≤ clientWidth`) and controls are reachable.
-- **Persistence:** change dials, reload, assert the controls restore the changed
-  values.
-**AC:** all pass in Chromium; `e2e/pagination.spec.ts` and `e2e/preview.spec.ts`
-still pass unchanged.
-
-### T8 — README + copy sweep
-Update the README "Right now it…" paragraph and code-map to describe the
-typography dials and live re-flow truthfully; credit the curated fonts and their
-license; keep run/test commands accurate. Mechanically sweep every user-visible
-string added or edited.
-**AC:** README is accurate and lists verified commands; the sweep finds no
-`—`/`–`, no banned vocabulary, and no negative empty-state phrasing in any shipped
-string or in this spec's §4 example copy.
+### T7 — README + copy sweep
+Update the README: the "Right now it…" paragraph gains the paper-budget
+slider (and stops listing it as a later milestone), the code map gains
+`src/ui/budget/` and `src/engine/budget.ts`/`solve.ts`, the e2e list gains
+the budget spec. Mechanically sweep every added or edited user-visible
+string.
+**AC:** README accurate against the shipped behavior and verified
+commands; sweep over all strings added in T1–T6 and this spec's §4 finds
+no "—"/"–", no banned vocabulary, no negative empty-state phrasing.
 
 ---
 
 ## 4. Copy (swept reference — ship these or better)
-The panel is controls, not prose. Keep labels terse. All strings below are swept
-(no em-dashes/en-dashes, no banned vocabulary, no negative phrasing):
+All strings below are swept: no em/en dashes, no banned vocabulary, no
+negative phrasing. Numbers are examples.
 
-- Panel region label: **Book design**
-- Page size: **Page size**; custom option: **Custom size**; **Width**,
-  **Height**, **Units** (values **in**, **mm**)
-- Font: **Font** (option for the default: **System serif**)
-- Font size: **Font size**
-- Line spacing: **Line spacing**
-- Margins (legend): **Margins**; **Inner**, **Outer**, **Top**, **Bottom**
-- Chapter opening: **Chapter opening** (options **Deep**, **Standard**,
-  **Minimal**); toggle: **Open chapters on the right**
-- Running headers (legend): **Running headers**; **Left page**, **Right page**
-  (options **None**, **Author**, **Title**, **Chapter**)
-- Widow & orphan control (toggle): **Widow and orphan control**
-- Hyphenation (toggle): **Hyphenation**
-- Primary action (disabled): button **Export**; helper line: **Export saves a
-  print-ready PDF.**
-- Secondary action: **Reset to defaults**
+- Slider label: **Fit into**; value text beside it: **52 sheets**
+- Readout, settled or hit: **52 sheets · 13 signatures of 4 sheets**
+- Readout, while solving: **Fitting your book**
+- Readout, closest (lattice gap): **Closest inside your bounds: 54 sheets**
+- Readout, target below reach: **Your bounds reach 61 sheets at the
+  tightest. Loosen a bound to go lower.**
+- Readout, target above reach: **Your bounds reach 44 sheets at the
+  roomiest. Loosen a bound to go higher.**
+- Before the first settle: **Laying out your book**
+- Disclosure summary: **Bounds**
+- Bounds labels: **Font size min (pt)**, **Font size max (pt)**,
+  **Line spacing min**, **Line spacing max**, **Margins min (%)**,
+  **Margins max (%)**
 
-Running heads and folios in the preview are book data (title, author, chapter,
-page number), exempt from the sweep. The empty/error/loading strings are
-inherited unchanged from EPIC 3 and remain swept.
-
-Sweep before done: reject `—`/`–`, the words `seamlessly / effortlessly / unlock
-/ elevate / empower / leverage / robust / dive in` (and kin), and negative
-openers (`You don't have`, `No … yet`, `Nothing … here`, `Unable to`,
-`Something went wrong`) in every shipped string, including anything added to
-`ControlPanel.tsx`, `Studio.tsx`, and font provenance/README copy.
+Sheet and signature figures are book data and exempt from the sweep, but
+the sentences around them are not. Sweep before done: reject "—"/"–", the
+banned vocabulary list, and negative openers in every string added to
+`BudgetSlider.tsx`, `Studio.tsx`, worker error messages, and the README.
 
 ---
 
@@ -521,112 +564,126 @@ openers (`You don't have`, `No … yet`, `Nothing … here`, `Unable to`,
 ### 5.1 Unit / integration (Vitest + jsdom)
 | Criterion | Test |
 |---|---|
-| Setters clamp/derive correctly | `designPatch.test.ts`: size re-derives leading; spacing sets `lineHeightPt`; margins/trim clamp to keep `columnPx > 0`; `affectsPagination` false only for header diffs |
-| Trim presets + unit conversion | `trimPresets.test.ts`: preset sets `trim` whole; `in↔mm` conversion preserves physical length |
-| Persistence forward-merge | `persistDesign.test.ts`: round-trip; unknown keys ignored; missing defaulted; malformed/empty → `DEFAULT_DESIGN`; out-of-range clamped |
-| Catalog + loaders | `catalog.test.ts` / `loadFonts.test.ts` / `fontFaces.test.ts`: `entryForStack` round-trip; idempotent, no-op for system serif and absent `FontFace`; `warmCatalog` swallows failure |
-| Worker font wiring | worker/engine unit tests: system path no-op await; curated path awaits load; stale-after-await dropped |
-| Live re-flow, no blank | `BookPreview.test.tsx` (fake engine): design change re-paginates without recreating engine or blanking; header-only change skips `paginate`; last result stays mounted + `aria-busy` during reflow; new result swaps on `done` |
-| ControlPanel behavior | `ControlPanel.test.tsx`: each dial reflects design and emits the right patch; preset/custom toggle; Reset; disabled Export; labeled inputs |
-| Studio + persistence | `Studio.test.tsx`: change persists via `saveDesign`; remount restores via `loadDesign`; ready renders panel + preview (+ structure) |
-| Copy swept | `ControlPanel.test.tsx` / `Studio.test.tsx`: no `—`/`–`, no banned vocabulary, no negative phrasing in visible text |
-| Existing suites intact | `App.test.tsx`, `states.test.tsx`, engine/worker/preview unit suites still pass |
+| Sheet/signature math exact | `budget.test.ts`: hand-computed tables incl. edges |
+| Ladder valid, in-bounds, on-lattice, deterministic | `budget.test.ts`: lattice/bounds/dedup/order asserts |
+| Bounds clamped, persisted, crash-free | `budget.test.ts` + `persistBudget.test.ts` |
+| Solver hits within ±1 sheet or reports honestly | `solve.test.ts`: in-range grid → hit; boundary targets → clamped with exact count |
+| Bounds never violated to hit a target | `solve.test.ts`: every counted candidate and winner inside bounds/floors across a target grid |
+| Latest-wins mid-solve | `solve.test.ts`: staleness during a count stops all posts |
+| No-op target short-circuits | `solve.test.ts`: retained-result reply, zero passes |
+| Deterministic outcomes | `solve.test.ts`: repeat solve equality |
+| Stats on every done | worker/client tests: `stats.totalLines` matches pages |
+| Solve flows through preview without blank/scroll loss or double paginate | `BookPreview.test.tsx` (fake engine): T3 asserts |
+| Slider feedback in-frame; readout states; a11y | `BudgetSlider.test.tsx` |
+| Studio applies outcome, snapshots base, persists | `Studio.test.tsx` |
+| Copy swept | `BudgetSlider.test.tsx` string sweep |
+| Existing suites intact | engine, worker, preview, panel, Studio, App suites unchanged |
 
-### 5.2 Browser harness (Playwright, Chromium) — `e2e/typography.spec.ts`
+### 5.2 Browser harness (Playwright, Chromium) — `e2e/budget.spec.ts`
 | Criterion | Test |
 |---|---|
-| Each dial re-flows within budget | change a dial; `__BINDERY_ENGINE_TIMINGS__` shows `firstFeedbackMs ≤ 100`, `settleMs ≤ 2000` on the 300k book; a leaf stays mounted; scroll preserved |
-| Trim re-mirrors margins | switch page size; recto text offset > verso; column width changes |
-| Curated font renders | select a face; a line's resolved `font-family` is that face; `document.fonts.check` true |
-| Panel usable at 390px | no horizontal scroll; controls reachable |
-| Settings persist | change dials, reload, controls restore values |
-| EPIC 2/3 harnesses unaffected | `pagination.spec.ts` and `preview.spec.ts` still green |
+| Drag re-flows 300k book: feedback ≤ 100ms, settle ≤ 2s | timings-hook assert on Middlemarch (T6 test 1) |
+| Target hit within stated tolerance (±1 sheet) | readout vs target on Middlemarch |
+| Never blanks, keeps place | leaf mounted + scrollTop preserved during solve |
+| Honest clamped report, bounds respected | pinched-bounds test (T6 test 2) |
+| Solver output is the real design and persists | dials-follow-solver + reload test |
+| Reachable from the sample, first minute, no file | sample drag test |
+| Mobile 390px | no horizontal scroll, controls usable |
+| EPIC 2/3/4 harnesses unaffected | existing three specs pass unchanged |
 
 ### 5.3 Recorded verification (part of DONE)
-Record in `result.json` `summary`: the observed `firstFeedbackMs`/`settleMs` for
-a dial-driven re-flow on the 300k book, confirmation that a curated font both
-renders and changes the page count (proof the worker measured it), no horizontal
-scroll at 390px, and that `pagination.spec.ts` + `preview.spec.ts` still pass.
+Record in `result.json` `summary`: the observed `firstFeedbackMs` and
+`settleMs` for a slider-driven solve on Middlemarch, the target vs
+achieved sheet count from that run, the number of solve passes, and
+confirmation that the pinched-bounds run reported the clamped count with
+no bound violated.
 
 ---
 
 ## 6. Data model / migrations
-No database and no server. The only persisted artifact is a single
-`localStorage` entry (`bindery.design`, `{ v: 1, design }`) holding the working
-`DesignSpec`. Its forward-only contract (§2.10) is the "migration": readers merge
-stored fields onto `DEFAULT_DESIGN`, so a blob written by any version loads in
-any other. `DesignSpec`, `Document`, and `PaginationResult` shapes are unchanged.
+No database, no server. Two `localStorage` entries, both forward-only:
+- `bindery.design` (existing, `{v:1, design}`) — untouched; solver output
+  is a valid design under the existing sanitize path.
+- `bindery.budget` (new, `{v:1, bounds}`) — readers merge stored keys onto
+  `DEFAULT_BOUNDS` and clamp via `clampBounds`; unknown keys are ignored,
+  malformed blobs yield defaults. A blob written by any version loads in
+  any other.
+Engine shapes (`DesignSpec`, `Document`, `PaginationResult`) are
+unchanged; `DoneMessage` gains additive fields only, and no old reader of
+that message exists outside this app.
 
 ---
 
 ## 7. QUALITY BAR mapping (binding; budget from the start)
-- **§1 Perceived speed / differentiator:** engine-affecting dials ride the warm
-  worker's hot path (streamed first feedback ≤100ms, settle ≤~2s on 300k);
-  header-only edits and control state update in-frame; the preview never blanks
-  or janks; the default path is untouched so EPIC 2's budgets hold.
-- **§2 Mobile-first:** the panel is usable at 390px, single-column, ~44px native
-  targets, no horizontal scroll; spread/preview behavior from EPIC 3 preserved.
-- **§3 Designed states:** re-flow keeps the last book visible with a quiet busy
-  affordance (no white flash); empty/error inherited and swept; disabled Export
-  is explained, not a dead error.
-- **§4 First-run:** the guided walkthrough is EPIC 7 and out of scope; this EPIC
-  must not regress EPIC 1's first-run (the sample still loads and now shows
-  turnable dials over a real book).
-- **§5 Security hygiene:** no server (authz/rate-limit N/A by construction);
-  inputs validated/clamped at the control boundary; font files are same-origin
-  app assets, not an upload path; `localStorage` guarded; no file text or PII in
-  logs.
-- **§6 Accessibility:** every input labeled; fieldset/legend grouping; visible
-  focus; full keyboard reach; `aria-busy` on re-flow; preview's sr-only page
-  count retained.
-- **§7 Radically simple interface:** one primary slot (Export), visibly
-  subordinate dials, terse labels, native controls, no walls of text.
-- **§8 Copy that sounds human:** §4 reference copy is swept; sweep anything added
-  before done. Header/folio are book data, exempt.
-- **§9 README:** update the "Right now it…" paragraph and code-map to describe the
-  dials and live re-flow; credit the curated fonts and license; keep commands
-  accurate; no pipeline jargon.
+- **§1 Perceived speed / differentiator:** in-frame thumb + readout
+  feedback; streamed first pages ≤ 100ms; solve settles within ~2s on
+  300k via predictor + bounded exact counts + winner reuse; measured and
+  asserted in e2e; the untouched default path keeps EPIC 2's budgets.
+- **§2 Mobile-first:** slider first in the column at 390px, 44px thumb,
+  bounds inputs wrap, no horizontal scroll; asserted in e2e.
+- **§3 Designed states:** pre-settle disabled state says what is
+  happening; solving state is quiet and layout-stable; clamped state
+  names the reachable count and the next step; the preview never blanks.
+- **§4 First-run:** the sample reaches the signature moment in the first
+  minute with no file (e2e-proven). The guided walkthrough remains
+  EPIC 7's work.
+- **§5 Security hygiene:** no server, no new network path; bounds inputs
+  clamped at the boundary; `localStorage` guarded; no book text or PII in
+  messages, storage, or logs.
+- **§6 Accessibility:** labeled slider with `aria-valuetext`, keyboard
+  commits, labeled bounds inputs in a fieldset, one polite live region,
+  visible focus everywhere.
+- **§7 Radically simple interface:** the slider says its one idea in two
+  words and a number; the readout is one line; bounds hide behind one
+  disclosure; Export remains the single primary action slot.
+- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and
+  a T7 gate.
+- **§9 README:** updated truthfully for the slider; commands unchanged
+  and still verified; no pipeline jargon.
 
-Reconciliation: building the nine dials, their live wiring, curated embeddable
-fonts, and session persistence is the scoped work and meeting the bar on it is in
-scope. The slider, export/imposition, project files, named presets, the
-walkthrough, and fonts beyond the curated set are later EPICs' work and would be
-drift here. If meeting the bar appeared to require a Non-Goal, that is a
-`blocked`, not a quiet expansion.
+Reconciliation: the slider, solver, bounds, readout, and their tests are
+the scoped work, and meeting the bar on them is in scope. Imposition
+options, cover math, presets, and the walkthrough stay out however
+tempting; if meeting the bar ever appeared to require one of them, that is
+a `blocked`, not a quiet expansion.
 
 ---
 
 ## 8. Definition of done
-- All eight tasks' ACs met; every planner acceptance criterion maps to a passing
-  test or a recorded §5.3 measurement.
-- `lint`, `typecheck`, `test` (Vitest), and all Playwright specs
-  (`typography.spec.ts` new; `pagination.spec.ts` and `preview.spec.ts`
-  unchanged) are green.
-- Every dial changes the live preview with perceptible feedback under 100ms and
-  settles within the EPIC 2 budget; the preview never blanks or resets scroll on
-  a change.
-- Changing the page size re-mirrors margins and re-widths the column correctly.
-- At least three curated faces plus the system serif render in the preview and
-  drive pagination (the worker measures the real face, so the page count moves),
-  with OFL files and provenance committed; embedding is deferred to EPIC 6.
-- The control panel is usable at 390px with ~44px targets and labeled inputs;
-  keyboard reaches every control with visible focus.
-- The working design persists to `localStorage` and restores on reload; it holds
-  design only (no file content, no PII).
-- `DEFAULT_DESIGN`, the `Document` model, the parser, and EPIC 2's budgets/
-  determinism are unchanged.
+- All seven tasks' ACs met; `lint`, `typecheck`, `test`, and all four
+  Playwright specs green (`budget.spec.ts` new; the other three
+  unchanged).
+- Dragging the slider on Middlemarch gives in-frame control feedback,
+  streamed book feedback ≤ 100ms, and a settled, exact result ≤ ~2s,
+  recorded per §5.3. Exceeding the budget on the 300k fixture is a failed
+  EPIC, not a shipped degradation.
+- The solver lands within ±1 sheet of any reachable target, and reports
+  the exact reachable count with a next step when the target is beyond
+  the bounds. It never violates a user bound or an engine floor.
+- The applied design is the working design: dials reflect it, it persists
+  and reloads, Reset still returns to `DEFAULT_DESIGN`, and repeated
+  solves never compound margin scaling (base snapshot rule).
+- The sample book demonstrates the slider with no user file, within the
+  first minute.
+- A session that never touches the slider is behaviorally identical to
+  EPIC 4: default path, budgets, determinism, and golden page counts
+  unchanged.
 
 ### Planner AC → coverage
-1. *Each dial changes the live preview with perceptible feedback under 100ms; the
-   full re-flow settles within the EPIC 2 budget* → T3, T4, T7; §5.1 re-flow row;
-   §5.2 row 1; §5.3.
-2. *Changing trim size re-mirrors margins correctly* → T1, T4, T7; §5.1 trim/
-   setter rows; §5.2 row 2.
-3. *Curated fonts render in preview and are confirmed embeddable (proven end to
-   end in EPIC 6)* → T2, T3, T7; §5.1 catalog/worker rows; §5.2 row 3;
-   embeddability proof deferred to EPIC 6 by the planner.
-4. *Control panel usable at 390px with ~44px targets and labeled inputs; keyboard
-   reaches every control with visible focus* → T5, T6, T7; §5.1 ControlPanel row;
-   §5.2 row 4.
-5. *Settings persist across the session (survive reload in the same browser)* →
-   T1, T6, T7; §5.1 persistence + Studio rows; §5.2 row 5.
+1. *Dragging the slider re-flows the whole 300k-word book with perceptible
+   feedback under 100ms and a settled result within about 2 seconds* →
+   §2.6 budget arithmetic, T2, T3, T6 test 1; §5.2 row 1; §5.3.
+2. *The solver hits the target sheet count within a stated tolerance, or
+   clearly reports the achievable range when bounds prevent the target* →
+   tolerance stated as ±1 sheet (§2.5); clamped outcomes carry the exact
+   boundary count and the readout names it with a next step (§2.5, §4);
+   T2, T4, T6 test 2; §5.1 solver rows; §5.2 rows 2 and 4.
+3. *The solver respects user-set min/max on font size and margins and
+   never violates a bound to hit a target* → ladder construction (§2.3),
+   bounds-never-violated property tests (T2), pinched-bounds e2e (T6);
+   §5.1 bounds row; §5.2 row 4.
+4. *Reachable from the bundled sample within the first minute with no user
+   file* → T6 sample test; §5.2 row 6.
+5. *Slider copy and readout are plain and positive, swept for banned tells
+   and em-dashes* → §4 reference strings, sweep test in T4, T7 gate;
+   §5.1 copy row.

@@ -107,14 +107,27 @@ describe("ladderCandidates", () => {
       JSON.stringify([c.font.sizePt, c.font.lineHeightPt, c.margins]),
     );
     expect(new Set(keys).size).toBe(keys.length);
-    expect(candidates.length).toBeGreaterThan(10);
-    expect(candidates.length).toBeLessThan(130);
-    // Densest end carries the bound minima; the levers never move backward.
-    expect(candidates[0].font.sizePt).toBe(DEFAULT_BOUNDS.fontMinPt);
-    expect(candidates[candidates.length - 1].font.sizePt).toBe(DEFAULT_BOUNDS.fontMaxPt);
+    // The full lever lattice: fine enough that sheet targets stay reachable.
+    expect(candidates.length).toBeGreaterThan(500);
+
+    // The ends are the all-dense and all-roomy corners of the bounds.
+    const first = candidates[0];
+    const last = candidates[candidates.length - 1];
+    expect(first.font.sizePt).toBe(DEFAULT_BOUNDS.fontMinPt);
+    expect(first.font.lineHeightPt).toBe(
+      Math.round(DEFAULT_BOUNDS.fontMinPt * DEFAULT_BOUNDS.spacingMin * 10) / 10,
+    );
+    expect(first.margins.inner).toBeLessThan(DEFAULT_DESIGN.margins.inner);
+    expect(last.font.sizePt).toBe(DEFAULT_BOUNDS.fontMaxPt);
+    expect(last.margins.inner).toBeGreaterThan(DEFAULT_DESIGN.margins.inner);
+
+    // Densest first: the density proxy never moves backward along the list.
+    const density = (c: (typeof candidates)[number]) => {
+      const m = computeMetrics(c);
+      return c.font.sizePt / (m.columnPx * m.bodyLinesPerPage);
+    };
     for (let i = 1; i < candidates.length; i++) {
-      expect(candidates[i].font.sizePt).toBeGreaterThanOrEqual(candidates[i - 1].font.sizePt);
-      expect(candidates[i].margins.inner).toBeGreaterThanOrEqual(candidates[i - 1].margins.inner);
+      expect(density(candidates[i])).toBeGreaterThanOrEqual(density(candidates[i - 1]) - 1e-12);
     }
   });
 

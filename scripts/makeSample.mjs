@@ -1,17 +1,29 @@
 // Builds the bundled sample EPUB under public/sample/. The text is Aesop's
-// Fables in the George Fyler Townsend translation (1887), which is in the
-// public domain worldwide and freely redistributable. Run with:
+// Fables in the George Fyler Townsend translation, which is in the public
+// domain worldwide and freely redistributable. Each of the four chapters
+// opens with its namesake fable and carries a further selection (from
+// sampleFables.json, same translation), so the sample is a real small book:
+// big enough for the paper-budget slider to move it. Run with:
 //   node scripts/makeSample.mjs
 // The produced .epub is committed so the app ships a one-tap sample.
 
 import { zipSync } from "fflate";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const enc = new TextEncoder();
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, "..", "public", "sample");
+
+const esc = (s) => s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const extras = JSON.parse(readFileSync(join(here, "sampleFables.json"), "utf8")).fables;
+const PER_CHAPTER = Math.floor(extras.length / 4);
+const extrasFor = (chapterIndex) =>
+  extras
+    .slice(chapterIndex * PER_CHAPTER, (chapterIndex + 1) * PER_CHAPTER)
+    .map((f) => `<h3>${esc(f.title)}</h3>${f.paras.map((p) => `<p>${esc(p)}</p>`).join("")}`)
+    .join("");
 
 const page = (title, body) =>
   enc.encode(`<?xml version="1.0" encoding="utf-8"?>
@@ -93,9 +105,9 @@ const files = {
     `<h1>Aesop's Fables</h1><p>A Small Selection</p><p>Translated by George Fyler Townsend</p>`,
   ),
 };
-for (const f of fables) {
-  files[`OEBPS/${f.id}.xhtml`] = page(f.title, `<h2>${f.title}</h2>${f.body}`);
-}
+fables.forEach((f, i) => {
+  files[`OEBPS/${f.id}.xhtml`] = page(f.title, `<h2>${f.title}</h2>${f.body}${extrasFor(i)}`);
+});
 
 const out = zipSync(files, { level: 6 });
 mkdirSync(outDir, { recursive: true });

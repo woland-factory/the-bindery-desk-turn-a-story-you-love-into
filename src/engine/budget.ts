@@ -99,46 +99,66 @@ export function clampBounds(raw: BudgetBounds): BudgetBounds {
   return { fontMinPt, fontMaxPt, spacingMin, spacingMax, marginsMinPct, marginsMaxPct };
 }
 
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+/** Every lattice value from `min` to `max` inclusive on a `step` grid. */
+function stepsBetween(min: number, max: number, step: number): number[] {
+  const inv = Math.round(1 / step);
+  const out: number[] = [];
+  const count = Math.round((max - min) * inv);
+  for (let i = 0; i <= count; i++) out.push(Math.round(min * inv + i) / inv);
+  return out;
 }
 
-/** Ladder sampling resolution; fine enough that dedup, not sampling, bounds the list. */
-const LADDER_STEPS = 128;
-
 /**
- * The density ladder: t in [0, 1] moves font size, line spacing, and a margin
- * scale together from their densest (t=0, fewest sheets) to roomiest (t=1)
- * bounds, snapped to the dial lattice and the engine's margin floors, then
- * deduplicated. Every non-lever field is carried verbatim from `base`. Pure:
- * same base and bounds, same list.
+ * The density ladder: every snapped combination of the three levers inside
+ * the bounds, deduplicated and ordered densest (fewest predicted pages)
+ * first. A single interpolated path would move all three levers in lockstep
+ * and leave sheet-count cliffs between font steps; the full lattice keeps the
+ * reachable sheet counts fine-grained, which is what lets the solver land
+ * within one sheet of a target. Order comes from a pure density proxy
+ * (line count scales with size over column width, divided by lines per
+ * page), with lever-value ties broken deterministically. Every non-lever
+ * field is carried verbatim from `base`. Pure: same base and bounds, same
+ * list. Typically a few thousand entries; each costs arithmetic only, and
+ * exact engine counts stay bounded by the solver regardless of list length.
  */
 export function ladderCandidates(base: DesignSpec, bounds: BudgetBounds): DesignSpec[] {
   const b = clampBounds(bounds);
-  const out: DesignSpec[] = [];
+  const entries: { design: DesignSpec; density: number; tie: number[] }[] = [];
   const seen = new Set<string>();
-  for (let k = 0; k <= LADDER_STEPS; k++) {
-    const t = k / LADDER_STEPS;
-    const sizePt = snapStep(lerp(b.fontMinPt, b.fontMaxPt, t), FONT_SIZE_STEP);
-    const multiple = snapStep(lerp(b.spacingMin, b.spacingMax, t), LINE_SPACING_STEP);
-    const lineHeightPt = Math.round(sizePt * multiple * 10) / 10;
-    const scale = lerp(b.marginsMinPct, b.marginsMaxPct, t) / 100;
-    const margins = clampMargins(base.trim, {
-      inner: base.margins.inner * scale,
-      outer: base.margins.outer * scale,
-      top: base.margins.top * scale,
-      bottom: base.margins.bottom * scale,
-    });
-    const key = [sizePt, lineHeightPt, margins.inner, margins.outer, margins.top, margins.bottom].join("|");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      ...base,
-      font: { ...base.font, sizePt, lineHeightPt },
-      margins,
-    });
+  for (const sizePt of stepsBetween(b.fontMinPt, b.fontMaxPt, FONT_SIZE_STEP)) {
+    for (const multiple of stepsBetween(b.spacingMin, b.spacingMax, LINE_SPACING_STEP)) {
+      const lineHeightPt = Math.round(sizePt * multiple * 10) / 10;
+      for (const pct of stepsBetween(b.marginsMinPct, b.marginsMaxPct, MARGIN_SCALE_STEP_PCT)) {
+        const scale = pct / 100;
+        const margins = clampMargins(base.trim, {
+          inner: base.margins.inner * scale,
+          outer: base.margins.outer * scale,
+          top: base.margins.top * scale,
+          bottom: base.margins.bottom * scale,
+        });
+        const key = [sizePt, lineHeightPt, margins.inner, margins.outer, margins.top, margins.bottom].join("|");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const design: DesignSpec = {
+          ...base,
+          font: { ...base.font, sizePt, lineHeightPt },
+          margins,
+        };
+        const metrics = computeMetrics(design);
+        entries.push({
+          design,
+          density: sizePt / (metrics.columnPx * metrics.bodyLinesPerPage),
+          tie: [sizePt, multiple, pct],
+        });
+      }
+    }
   }
-  return out;
+  entries.sort((a, z) => {
+    if (a.density !== z.density) return a.density - z.density;
+    for (let i = 0; i < 3; i++) if (a.tie[i] !== z.tie[i]) return a.tie[i] - z.tie[i];
+    return 0;
+  });
+  return entries.map((e) => e.design);
 }
 
 /** Lightweight stats of a completed pass, tallied from its assembled pages. */

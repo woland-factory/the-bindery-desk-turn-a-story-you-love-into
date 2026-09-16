@@ -2,9 +2,9 @@ import type { Document } from "../model/document";
 import type { DesignSpec, Page, PaginationResult } from "./types";
 import type { Measurer } from "./measurer";
 import { FIRST_PAGES, runEngine } from "./engine";
+import { computeMetrics } from "./paginate";
 import {
   ladderCandidates,
-  predictPages,
   sheetsForPages,
   statsForResult,
   type BudgetBounds,
@@ -133,9 +133,22 @@ export async function runSolve(
   const candidates = ladderCandidates(request.base, request.bounds);
   const counted = new Map<number, Counted>();
 
+  // Per-candidate geometry, computed once; predictions across the (large)
+  // ladder then cost a few flops each, so every re-pick stays sub-millisecond.
+  const candMetrics = candidates.map((c) => computeMetrics(c));
+  let refMetrics = computeMetrics(ref.design);
+  const predictAt = (idx: number): number => {
+    const cm = candMetrics[idx];
+    const candLines =
+      ref.stats.totalLines *
+      (candidates[idx].font.sizePt / ref.design.font.sizePt) *
+      (refMetrics.columnPx / cm.columnPx);
+    const overhead = ref.pageCount - Math.ceil(ref.stats.totalLines / refMetrics.bodyLinesPerPage);
+    return Math.max(1, Math.ceil(candLines / cm.bodyLinesPerPage) + overhead);
+  };
+
   // Sheets for a candidate: exact when counted, predicted otherwise.
-  const sheetsAt = (idx: number): number =>
-    counted.get(idx)?.sheets ?? sheetsForPages(predictPages(ref, candidates[idx]));
+  const sheetsAt = (idx: number): number => counted.get(idx)?.sheets ?? sheetsForPages(predictAt(idx));
 
   // Pick the candidate to evaluate for `target`. Beyond the ends the boundary
   // wins; inside, the best by |sheets - target|, ties preferring sheets <=
@@ -156,6 +169,47 @@ export async function runSolve(
     return best;
   };
 
+  // The next candidate worth an exact count, or null when nothing new could
+  // beat the best real result. Three deterministic refinements, in order:
+  // interpolate inside a counted pair that brackets the target (sheet count
+  // is near-linear in ladder index locally), then the predictor's fresh
+  // pick, then one ladder step from the best count toward the target.
+  const nextCandidate = (bestIdx: number): number | null => {
+    let lo: [number, number] | null = null; // [idx, sheets], largest sheets <= target
+    let hi: [number, number] | null = null; // [idx, sheets], smallest sheets >= target
+    for (const [idx, c] of counted) {
+      if (c.sheets <= target && (!lo || c.sheets > lo[1] || (c.sheets === lo[1] && idx > lo[0])))
+        lo = [idx, c.sheets];
+      if (c.sheets >= target && (!hi || c.sheets < hi[1] || (c.sheets === hi[1] && idx < hi[0])))
+        hi = [idx, c.sheets];
+    }
+    if (lo && hi && hi[1] > lo[1]) {
+      const k = Math.round(lo[0] + ((target - lo[1]) * (hi[0] - lo[0])) / (hi[1] - lo[1]));
+      const clamped = Math.max(0, Math.min(candidates.length - 1, k));
+      if (!counted.has(clamped)) return clamped;
+    } else if (counted.size >= 2) {
+      // No bracket yet: secant-extrapolate through the two counted points
+      // with distinct sheet counts, so a plateau of equal counts is escaped
+      // in the target's direction instead of re-sampled.
+      const points = [...counted.entries()]
+        .map(([idx, c]) => [idx, c.sheets] as [number, number])
+        .sort((a, z) => Math.abs(a[1] - target) - Math.abs(z[1] - target) || a[0] - z[0]);
+      const near = points[0];
+      const other = points.find((p) => p[1] !== near[1]);
+      if (other) {
+        const k = Math.round(near[0] + ((target - near[1]) * (other[0] - near[0])) / (other[1] - near[1]));
+        const clamped = Math.max(0, Math.min(candidates.length - 1, k));
+        if (!counted.has(clamped)) return clamped;
+      }
+    }
+    const repick = pick();
+    if (!counted.has(repick)) return repick;
+    const dir = (counted.get(bestIdx) as Counted).sheets > target ? -1 : 1;
+    const step = bestIdx + dir;
+    if (step >= 0 && step < candidates.length && !counted.has(step)) return step;
+    return null;
+  };
+
   let working = pick();
   for (;;) {
     if (!counted.has(working)) {
@@ -164,13 +218,14 @@ export async function runSolve(
       counted.set(working, count);
       // Re-anchor the predictor to the freshest exact count.
       ref = { design: candidates[working], pageCount: count.result.pageCount, stats: count.stats };
+      refMetrics = candMetrics[working];
     }
-    const best = bestCounted(counted, target);
-    if (Math.abs(best.sheets - target) <= SHEET_TOLERANCE) break;
+    const bestIdx = bestCountedIndex(counted, target);
+    if (Math.abs((counted.get(bestIdx) as Counted).sheets - target) <= SHEET_TOLERANCE) break;
     if (passes >= MAX_SOLVE_PASSES) break;
-    const repick = pick();
-    if (counted.has(repick)) break; // the correction names nothing new
-    working = repick;
+    const next = nextCandidate(bestIdx);
+    if (next == null) break; // the correction names nothing new
+    working = next;
   }
 
   const winnerIdx = bestCountedIndex(counted, target);
@@ -233,6 +288,3 @@ function bestCountedIndex(counted: Map<number, Counted>, target: number): number
   return bestIdx;
 }
 
-function bestCounted(counted: Map<number, Counted>, target: number): Counted {
-  return counted.get(bestCountedIndex(counted, target)) as Counted;
-}
