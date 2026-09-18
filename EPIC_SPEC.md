@@ -1,689 +1,697 @@
-# EPIC SPEC — Paper-budget slider (signature moment)
+# EPIC SPEC — Dual export: typeset PDF and imposed signatures
 
-> EPIC 5 of The Bindery Desk. EPIC 2 built the streamed pagination engine,
+> EPIC 6 of The Bindery Desk. EPIC 2 built the streamed pagination engine,
 > EPIC 3 the facing-page preview, EPIC 4 the typography dials with live
-> whole-book re-flow. This EPIC ships the product's signature moment: the
-> "Fit into N sheets" slider. A deterministic solver negotiates font size,
-> line spacing, and margins within user-set bounds to hit a target sheet
-> count, re-flowing the whole book live through the existing warm worker,
-> and a readout shows the resulting sheet and signature count. When bounds
-> prevent the target, the solver reports the exact achievable count on that
-> side, never a silent miss and never a dead end.
+> whole-book re-flow, EPIC 5 the paper-budget slider and its solver. This
+> EPIC turns the book on screen into two files a binder can print: a
+> **typeset PDF** that reproduces the preview page for page with the font
+> embedded, and a **printer-ready signature PDF** whose sheets fold into
+> reading order. Both are built entirely in the browser, off the main
+> thread, with visible progress, from one Export click.
 >
-> This EPIC adds NO new typography dials beyond EPIC 4's nine, NO cover or
-> spine math, NO export/imposition (EPIC 6), NO project files or presets
-> (EPIC 7), and NO server-side computation. Everything runs in the browser:
-> main thread plus the existing pagination worker.
+> This EPIC adds NO new typography or budget controls, NO cover or
+> dust-jacket export, NO output format other than PDF, NO cloud storage or
+> upload of any kind, and NO server. It changes neither `DEFAULT_DESIGN`,
+> the dial set, the EPUB parser, nor the pagination engine's output shape.
+> Everything runs in the browser: the main thread plus a new dedicated
+> export worker, alongside the existing pagination worker.
 
 ---
 
 ## Quality differentiator (this product must win here)
 
 **Live responsiveness of the whole-book re-flow.** Any control, above all
-this slider, re-flows the entire book with perceptible feedback under 100ms
-and a settled result within about two seconds on a 300k-word novel. We do
-not out-feature InDesign. We make control immediate and reversible in a way
-no free path (Word, Calibre, Reedsy) offers.
+the paper-budget slider, re-flows the entire book with perceptible feedback
+under 100ms and a settled result within about two seconds on a 300k-word
+novel. We make control immediate and reversible in a way no free path
+(Word, Calibre, Reedsy) offers.
 
-**What it demands of THIS EPIC:** the slider is the differentiator's whole
-reason to exist, and it is the hardest case: one drag implies a *search*
-over designs, not a single pass. The budget is not negotiable:
+**What it demands of THIS EPIC:** export is not the re-flow, but it must
+protect the trust the re-flow earns. Two things follow:
 
-- **Instant control feedback.** The thumb, the target readout, and a busy
-  affordance update in the same frame as the drag. The book's streamed
-  `firstPages` land within 100ms of dispatch, exactly as a dial change does.
-- **Settled within about 2 seconds on Middlemarch (300k words).** The solve
-  may run at most a small, fixed number of exact evaluation passes; the
-  design below (predictor narrows, exact counts verify, winner's result is
-  reused rather than re-laid-out) is chosen to fit that envelope. If the
-  measured drag-to-settle time exceeds the budget on the 300k fixture, the
-  EPIC is failed, not shipped degraded; tuning worker internals (fewer
-  count passes, a cheaper event-loop yield) to meet it is in scope.
-- **Latest-wins under a drag stream.** A drag emits many targets; every
-  superseded solve must die promptly (stale checks inside the count loop,
-  not just between passes). No backlog, no stale result ever painting.
-- **Never blank, never lose the reader's place.** The solve's final result
-  flows through the same `progress`/`done` path EPIC 4 re-flows use, so the
-  mounted book, the reflow affordance, and fraction-based scroll anchoring
-  are inherited, not reimplemented.
-- **Exact numbers only.** The readout after settle always states the real
-  sheet count of the applied design, taken from the engine's own result.
-  The predictor is a search accelerator; it never reaches the user's eyes.
+- **The file is exactly the book on screen.** The typeset PDF has the same
+  page count and the same page geometry as the preview for the same
+  settings, built from the same `PaginationResult`. A binder who prints
+  forty sheets without a test page must get the book they were looking at.
+- **Export never freezes the surface.** A 300k-word book is roughly 900
+  pages. Building two PDFs from it must run in a worker with streamed
+  progress, so the studio stays interactive and the paper-budget slider the
+  differentiator lives on never stalls behind an export. A frozen tab during
+  export would break the exact promise EPIC 5 made.
+
+Export fidelity and a live surface are both in scope from the start.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **The "Fit into N sheets" slider.** A native range input, prominent at
-   the top of the studio's control column, whose value is a target sheet
-   count. Dragging it runs the solver and re-flows the whole book live.
-   Sheet math for this EPIC: one sheet folded once holds 4 book pages
-   (`PAGES_PER_SHEET = 4`, the community's folio standard), and signatures
-   are counted at 4 sheets each (`SHEETS_PER_SIGNATURE = 4`, 16 pages).
-   Both are named constants with a comment; making them configurable is
-   EPIC 6's imposition surface.
-2. **The solver.** Deterministic search over a one-dimensional "density
-   ladder": a parameter `t ∈ [0, 1]` interpolates the three levers between
-   their user bounds (font size in pt, line-spacing multiple, and a margin
-   scale applied to the binder's own margins), snapped to the existing dial
-   lattice so every candidate is a valid `DesignSpec`. Page count along the
-   ladder is monotone (up to snap noise), so the search is: predict from
-   the last settled pass's stats, verify with a bounded number of exact
-   worker-local counts, apply the best real result.
-3. **User-set bounds.** A collapsed "Bounds" disclosure under the slider:
-   font size min/max (pt), line spacing min/max (multiple), margins min/max
-   (percent of the binder's current margins). The solver never emits a
-   design outside them, and never violates the engine's hard floors
-   (`clampMargins`, trim minimums). Bounds persist to `localStorage` with
-   the same guarded, forward-merge pattern as the design.
-4. **Sheet and signature readout.** Always visible next to the slider:
-   the current book's sheets and signatures once settled, a quiet busy
-   state while a solve runs, and, when the target is out of reach, the
-   exact achievable count on that side with a next step (loosen a bound).
-   No silent failure, no dead end.
-5. **Applied designs are real designs.** The solver's output is set as the
-   working design: the EPIC 4 dials move to show what the solver chose, the
-   design persists through the existing `persistDesign` path, and Reset to
-   defaults still works. A manual dial change simply takes over again.
-6. **First-minute reach.** The slider works on the bundled sample with no
-   user file: open the sample, drag, watch the book re-flow. Proven in e2e.
-7. **Mobile-first, accessible, swept.** Usable at 390px with a ~44px thumb
-   and no horizontal scroll; every input labeled; readout announced via a
-   polite live region; all copy swept for banned tells.
+1. **Typeset PDF.** One PDF page per `Page` in the current settled
+   `PaginationResult`, at the design's trim size, reproducing the preview:
+   mirrored inner/outer margins, running header and folio on body pages,
+   the engine's laid-out lines in the text area, blank pages where the
+   engine inserted them. The book's face is embedded (subset) so the file
+   renders on a machine that lacks the font.
+2. **Imposition math.** A pure, deterministic function that maps a page
+   count to a sheet-by-sheet plan folding into reading order, with
+   **configurable sheets-per-signature** and a **duplex flip** option
+   (long edge default, short edge). Verified against hand-computed 8-page
+   and 16-page saddle-stitch orderings and a physical fold of the sample.
+3. **Signature PDF.** One PDF page per printed sheet side, at the folded
+   sheet size (two trim pages wide by one trim page tall), placing two
+   typeset pages per side per the imposition plan, with the correct
+   rotation for the chosen flip. The last signature is padded with blank
+   pages to a whole number of sheets.
+4. **One-click dual export with progress.** A single Export action builds
+   both PDFs in the export worker, streams progress to the studio, and
+   saves both files. The main thread stays interactive throughout; the
+   300k-word book completes without an out-of-memory failure.
+5. **A small print-setup surface.** Sheets-per-signature and duplex flip,
+   in one disclosure beside the Export button. Sensible defaults, so a
+   first-time binder never has to open it.
+6. **First-run reach.** Export works on the bundled sample with no user
+   file: open the sample, click Export, get two valid PDFs. Proven in e2e.
+7. **No upload, ever.** Both PDFs are built from bytes already in the tab.
+   The book file is never sent anywhere. Proven with the network tab.
+8. **Mobile-first, accessible, swept.** The Export control and print-setup
+   inputs are usable at 390px with ~44px targets and no horizontal scroll;
+   every input labeled; progress announced politely; all copy swept.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **New typography dials beyond EPIC 4.** The bounds inputs are the
-  solver's contract (the planner's "user-set bounds"), not dials: they
-  never change the design directly. Do not add any new direct design
-  control.
-- **Cover or spine math.** No paper-thickness input, no spine width, no
-  cover surface of any kind.
-- **Server-side computation.** No server exists; the solve runs in the
-  existing Web Worker. Do not add any network path.
-- **Export, PDF generation, imposition layouts, or signature reordering
-  (EPIC 6).** The signature count here is arithmetic for the readout only.
-  The Export slot stays a disabled placeholder. `PaginationResult` keeps
-  its shape: do not add a `signatures` field to the engine's result.
-- **Project files, named presets, guided walkthrough (EPIC 7).** Bounds
-  persistence uses its own small key; nothing else is saved.
-- **Editing the story text, re-parsing, or changing the `Document` model
-  or EPUB parser.**
-- **Changing `DEFAULT_DESIGN`, the dial set, or EPIC 2's default path.**
-  A session that never touches the slider must behave byte-identically to
-  EPIC 4: same first paginate, same budgets, same golden page counts.
-- **Any runtime LLM.**
+- **Cover or dust-jacket export.** No cover surface, no spine width, no
+  paper-thickness input of any kind.
+- **Any output format other than PDF.** No PNG, no per-page images, no
+  print-CSS path, no EPUB re-export.
+- **Cloud storage of exports.** No account, no server, no remote save, no
+  share link. Files are saved locally by the browser.
+- **New typography or budget controls.** The print-setup inputs configure
+  imposition only; they never change the design or trigger a re-flow. Do
+  not add a design dial or a new budget lever.
+- **Changing the engine's output shape.** `PaginationResult`, `Page`,
+  `Line`, and `DesignSpec` are unchanged. Export consumes the settled
+  result read-only; it does not add fields to any engine message.
+- **Re-flowing or re-paginating to export.** Export uses the result the
+  preview already settled on; it does not run a second layout pass with
+  different rules.
+- **Editing the story, re-parsing, or touching the EPUB parser or
+  `Document` model.**
+- **Any runtime LLM, any network path beyond same-origin app assets.**
 
 ---
 
 ## 2. Technical design
 
-### 2.1 What already exists (consume; change only where named below)
-- `src/engine/types.ts` — `DesignSpec`, `Page`, `PaginationResult`,
-  `Timings`. **Unchanged.**
-- `src/engine/engine.ts` — `runEngine` (streamed single pass, yields
-  `progress` after `FIRST_PAGES`, `tick` per chapter, terminal `done`) and
-  `driveEngine` (slicing + `isStale` cancellation via `EngineTransport`).
-  **Unchanged**; the solver drives `runEngine` generators through its own
-  transport-like loop with the same slicing and staleness rules.
-- `src/engine/paginate.ts` — `computeMetrics` (columnPx, linesPerPage per
-  design). **Unchanged**; the predictor and ladder call it.
-- `src/engine/measurer.ts` / `offscreenMeasurer.ts` — the worker's memoized
-  canvas measurer. **Unchanged.** Its (style, text) cache is what makes the
-  solver's repeated passes affordable: a candidate at an already-measured
-  font size re-breaks from Map hits alone.
-- `src/engine/client.ts` — `EngineClient` (latest-wins, timings hook
-  `__BINDERY_ENGINE_TIMINGS__`). **Gains one method** (`solve`, §2.5).
-- `src/engine/protocol.ts` — **gains one main→worker message** (`solve`)
-  and two small additions to `DoneMessage` (§2.5).
-- `src/engine/pagination.worker.ts` — **gains the solve handler** and
-  retains lightweight stats of the last completed pass (§2.6).
-- `src/ui/design/designPatch.ts` — bounds constants (`FONT_SIZE_MIN/MAX`,
-  `LINE_SPACING_*`), `clampMargins`, `affectsPagination`. **Unchanged**;
-  the ladder reuses its constants and clamps so solver output always lies
-  on the dial lattice (font on the 0.5pt grid, spacing on 0.05, margins
-  rounded per unit). No relaxation of `persistDesign` is needed.
-- `src/ui/BookPreview.tsx` — engine ownership, streamed re-flow without
-  blanking, scroll anchoring, `committedRef`. **Gains three props** and one
-  effect (§2.7); its state machine and handlers are reused, not forked.
-- `src/ui/Studio.tsx` — owns the design, persists it, warms fonts.
-  **Gains** budget state, the `BudgetSlider`, and outcome application
+### 2.1 What already exists (consume; change only where named)
+- `src/engine/types.ts` — `DesignSpec`, `Page`, `Line`, `PaginationResult`.
+  **Unchanged.** Export reads `result.pages` and each `Line`'s `x/y/width`.
+- `src/ui/pageGeometry.ts` — `pagePlacement(design, side)` returns the full
+  physical page box and text placement in CSS px (mirrored per side, folio
+  edge, chrome baseline). **Unchanged**; the PDF builder places every page
+  from exactly these numbers, so the file matches the preview by
+  construction.
+- `src/engine/units.ts` — `PX_PER_PT = 96/72`, `PX_PER_IN`, `lengthToPx`,
+  `ptToPx`. **Unchanged**; the builder converts CSS px to PDF points by
+  dividing by `PX_PER_PT` (`pt = px / PX_PER_PT`).
+- `src/ui/runningHead.ts` — `resolveRunningHead(template, ctx)`.
+  **Unchanged**; the builder resolves headers with the same function and
+  the same `{title, author, chapter}` context `PageView` uses.
+- `src/ui/PageView.tsx` — the on-screen leaf. Its soft-hyphen display rule
+  (`displayText`: strip `SOFT_HYPHEN`, append a visible hyphen when
+  `line.hyphenated`) is the single source of truth for rendered line text.
+  **Extract** that rule into a shared pure helper (§2.3) so the PDF and the
+  preview render byte-identical strings; `PageView` then calls the helper.
+- `src/engine/budget.ts` — `PAGES_PER_SHEET` (4), `SHEETS_PER_SIGNATURE`
+  (4), `sheetsForPages`. **Unchanged**; imposition reuses these constants
+  so a "signature" means the same thing the slider readout already states.
+- `src/fonts/catalog.ts` — `FONT_CATALOG`, `entryForStack`, `FontEntry`.
+  **Gains** an `embed` field per embeddable entry (§2.4): the URLs of the
+  TTF/OTF used for embedding. On-screen woff2 rendering is untouched.
+- `src/ui/ControlPanel.tsx` — holds the disabled Export placeholder and its
+  hint. **Gains** a live Export button, its progress/idle/error states, and
+  the print-setup disclosure, wired through props (§2.8).
+- `src/ui/BookPreview.tsx` — owns the engine and the settled
+  `PaginationResult` in `state.result`. **Gains** an `exportRequest` prop
+  and `onExportState` callback, and an effect that drives the export
+  controller from `state.result` (§2.7), mirroring the existing `budget`
+  prop pattern exactly.
+- `src/ui/Studio.tsx` — owns the working design and orchestrates the budget
+  request. **Gains** export request state and the print-setup options
   (§2.8).
-- `src/ui/ControlPanel.tsx`, `Spread`, `PageView`, `pageGeometry`,
-  `persistDesign`, fonts. **Unchanged.**
 
-### 2.2 New file / module layout
+### 2.2 New dependencies
+Two runtime dependencies, both pure-JS and browser-safe, no DOM, no
+network of their own:
+- `pdf-lib` (^1.17.1) — PDF construction, page embedding, save to bytes.
+- `@pdf-lib/fontkit` (^1.1.1) — font subsetting for `embedFont(bytes,
+  { subset: true })`.
+Both run inside the export worker. No other library (no state manager, no
+imposition library) is added; the imposition is a few dozen lines of pure
+arithmetic (MIT prior art: bookbinder-js).
+
+### 2.3 New file / module layout
 ```
-src/engine/
-  budget.ts            pure, shared main + worker (no DOM):
-                       PAGES_PER_SHEET, SHEETS_PER_SIGNATURE,
-                       sheetsForPages(pageCount), signaturesForSheets(sheets),
-                       BudgetBounds + DEFAULT_BOUNDS + clampBounds(raw),
-                       ladderCandidates(base, bounds): DesignSpec[] (snapped, deduped, densest first),
-                       PassStats { totalLines, openerPages, blankPages },
-                       predictPages(ref: {design, pageCount, stats}, candidate): number,
-                       SolveOutcome (shape in §2.5)
-  budget.test.ts
-  solve.ts             worker-side driver: runSolve(doc, request, measurer, transport)
-                       — predictor seed, exact counts with slicing + isStale,
-                       winner selection, result reuse (§2.6)
-  solve.test.ts
-src/ui/budget/
-  BudgetSlider.tsx     the slider, readout, and Bounds disclosure
-  BudgetSlider.test.tsx
-  persistBudget.ts     loadBounds(): BudgetBounds, saveBounds(b): void
-                       (localStorage "bindery.budget", versioned, guarded,
-                       forward-merge onto DEFAULT_BOUNDS via clampBounds)
-  persistBudget.test.ts
-src/engine/protocol.ts   + SolveMessage; DoneMessage + stats + solve?
-src/engine/client.ts     + solve(request, handlers)
-src/engine/pagination.worker.ts  + solve handler; retain last-pass stats
-src/ui/BookPreview.tsx   + budget prop, onSolveOutcome, onSettled
-src/ui/Studio.tsx        + budget state, budgetBase snapshot, BudgetSlider
-src/styles.css           slider (44px thumb), readout, bounds disclosure
-e2e/budget.spec.ts       drag budget, tolerance, bounds respect, clamped
-                         report, sample reach, 390px
+src/export/
+  geometry.ts        pure px->pt helpers and the per-line baseline model
+                     (pxToPt(px), pagePointBox(design, side) from
+                     pagePlacement, lineBaselinePt(placement, line, ascent)).
+  geometry.test.ts
+  lineText.ts        the shared soft-hyphen display rule extracted from
+                     PageView (displayLineText(line): string).
+  lineText.test.ts
+  impose.ts          pure, no pdf-lib: ImpositionOptions,
+                     DEFAULT_IMPOSITION, imposeBook(pageCount, options):
+                     ImpositionPlan (§2.6). Deterministic arithmetic only.
+  impose.test.ts
+  fonts.ts           map a DesignSpec to the face to embed and its byte
+                     URLs (reuse entryForStack + the new catalog.embed);
+                     the system serif maps to a designated embeddable
+                     fallback serif so export always embeds a real face.
+  fonts.test.ts
+  pdf.ts             the builders that run in the worker:
+                       buildTypeset(result, design, docMeta, fontBytes, onProgress): Uint8Array
+                       buildSignatures(typesetDoc, plan, design, flip, onProgress): Uint8Array
+                     buildSignatures embeds typeset pages as shared XObjects
+                     (pdf-lib embedPages), never re-drawing text.
+  export.worker.ts   worker entry: receive an ExportRequest, fetch font
+                     bytes same-origin, run both builders with progress,
+                     transfer both ArrayBuffers back. No DOM.
+  protocol.ts        ExportRequest / ExportProgress / ExportDone / ExportError.
+  client.ts          main-thread ExportClient: post the request, forward
+                     progress, resolve with both byte arrays; latest-wins
+                     cancel on a new request; disposes the worker.
+  download.ts        main-thread save: bytes -> Blob -> object URL ->
+                     anchor click; filenameSlug(title, suffix).
+  download.test.ts
+src/fonts/catalog.ts           + embed URLs on embeddable entries
+src/ui/PageView.tsx            call displayLineText (behavior unchanged)
+src/ui/ControlPanel.tsx        live Export button + print-setup disclosure
+src/ui/BookPreview.tsx         + exportRequest prop, onExportState, effect
+src/ui/Studio.tsx              + export request state, print-setup options
+src/styles.css                 Export progress, print-setup disclosure
+public/fonts/embed/            <id>-400 and <id>-700 TTF/OTF for the four
+                               OFL faces (lazy; export-only)
+public/fonts/PROVENANCE.md     record the embed files' sources/versions
+e2e/export.spec.ts             sample export, 300k progress, no-upload, 390px
 ```
-No new runtime dependency. Do not add a math/solver library or a state
-library; the search is a few dozen arithmetic evaluations and at most a
-handful of engine passes.
 
-### 2.3 The density ladder (parameterization — exact)
-The solver moves exactly three levers; everything else (trim, font family,
-chapter opening, headers, widow control, hyphenation) is carried verbatim
-from the base design.
+### 2.4 Font embedding (the "renders without the font" guarantee)
+The on-screen faces are woff2, which the subsetting path does not consume
+reliably. Export embeds from a TTF/OTF of the **same upstream release** as
+the woff2 (same family and version, so glyph metrics match the measured
+layout). These files live under `public/fonts/embed/` and are fetched by
+the worker only when an export runs, so the initial bundle is untouched.
 
-| Lever | Range at t=0 (densest) → t=1 (roomiest) | Snap |
-|---|---|---|
-| `font.sizePt` | `bounds.fontMinPt` → `bounds.fontMaxPt` | 0.5 pt (`FONT_SIZE_STEP`) |
-| line-spacing multiple | `bounds.spacingMin` → `bounds.spacingMax`; stored as `lineHeightPt = round(sizePt × multiple, 0.1)` | 0.05 (`LINE_SPACING_STEP`) |
-| margin scale | `bounds.marginsMinPct/100` → `bounds.marginsMaxPct/100`, multiplying each of the base design's four margins, then `clampMargins(trim, ·)` | per-unit rounding (0.01 in / 1 mm) via `clampMargins` |
+- `catalog.ts` gains `embed?: { regular: string; bold: string }` on each
+  embeddable entry, pointing at those files. `FontEntry.weights` (woff2,
+  on-screen) is unchanged.
+- `export/fonts.ts` resolves the face for a design via `entryForStack`.
+  For the four OFL faces it returns their `embed` URLs. For the **system
+  serif** (no file, cannot embed the OS Georgia) it returns a designated
+  bundled fallback serif's `embed` URLs, so export always embeds a real,
+  subsettable face and the guarantee is uniform.
+- Because the engine's lines are left-aligned and pre-broken (every
+  `Line.x` is 0; ragged right, no justification), embedding a face whose
+  metrics differ slightly from the measured one can never re-break a line
+  or overflow the column beyond a hair. The four OFL faces embed the exact
+  measured design and reproduce the preview faithfully; the system-serif
+  export substitutes the fallback serif for the OS Georgia and is
+  documented as such. This is honest and never changes the page count.
+- The worker calls `pdfDoc.registerFontkit(fontkit)` then
+  `pdfDoc.embedFont(bytes, { subset: true })` for the regular weight (the
+  only weight the preview draws, §2.5), so only the glyphs actually used
+  ship in the file. Subsetting is also the primary guard against a bloated
+  900-page file. Bundling the bold TTF/OTF is fine for provenance symmetry,
+  but this EPIC embeds and draws the regular weight only.
 
-`ladderCandidates(base, bounds)` samples t finely (e.g. 1/128 steps),
-snaps each sample to the lattice above, deduplicates identical designs,
-and returns the distinct candidates ordered densest → roomiest. The list
-is small (typically well under 100) and pure: same inputs, same list.
-Because all three levers grow together with t, page count along the list
-is monotone non-decreasing up to ±1–2 pages of snap and widow noise; the
-exact-count step (§2.6) absorbs that noise.
+**Provenance.** Add the embed files' sources and versions to
+`public/fonts/PROVENANCE.md`; they keep the OFL 1.1 license already in
+`public/fonts/OFL.txt`. No new license obligation beyond the existing four.
 
-**Bounds shape and defaults** (`BudgetBounds`):
+### 2.5 Typeset PDF geometry (matches the preview by construction)
+`buildTypeset` iterates `result.pages` in order and emits one PDF page each.
+For a page of `side`:
+- **Page box.** `pagePointBox(design, side)` converts `pagePlacement`'s
+  `pageWidthPx/pageHeightPx` to points; the PDF page is created at that
+  size. Every page uses its own side's placement, so verso/recto mirror.
+- **Text area origin.** `textLeftPx`, `textTopPx`, `columnPx`,
+  `textHeightPx` from `pagePlacement`, converted to points. PDF's y-origin
+  is the page bottom, so a top-referenced offset `oTop` becomes
+  `pageHeightPt - oTop`.
+- **Lines.** For each `Line`, x = `textLeftPt + pxToPt(line.x)` (0 in this
+  engine, left aligned). The baseline is modeled on the CSS line box
+  `PageView` renders: a box of height `lineHeightPx` starting at
+  `textTopPx + line.y`, font-size `fontSizePx`, text vertically centered by
+  line-height. `lineBaselinePt` computes the baseline from the top of that
+  box using the embedded font's ascent (via fontkit) and the half-leading
+  `(lineHeightPx - fontSizePx)/2`, then flips to PDF's bottom origin. The
+  string drawn is `displayLineText(line)` (§2.3). **Weight.** `PageView`
+  sets no `font-weight` on any line, header, or folio, so the on-screen leaf
+  draws everything at the regular weight (the engine measures heading blocks
+  bold, but the preview renders them regular; do not "fix" that here). To
+  match the preview, the typeset PDF draws every line, header, and folio in
+  the embedded **regular** weight. The bold weight is not needed for
+  fidelity in this EPIC; `export/fonts.ts` may resolve regular only.
+- **Chrome.** For `kind === "body"`, draw the running head at
+  `chromeBaselinePx` (from `pagePlacement`) using
+  `resolveRunningHead(template, {title, author, chapter})` with the chapter
+  title looked up from `docMeta.chapterTitles[page.chapterIndex]`, and the
+  folio (`page.index + 1`) at the `folioEdge`. `kind === "blank"` and
+  `kind === "opener"` follow `PageView`'s rules (openers carry no running
+  head/folio only if `PageView` omits them; match `PageView`). Blank pages
+  draw nothing.
+- **`docMeta`** passed from the main thread is small: `{ title, author,
+  chapterTitles: Record<number, string> }`, built once from the `Document`.
+  No book text beyond chapter titles crosses in metadata; the page text is
+  already in `result.pages`.
+
+**Page count equals the preview.** The typeset PDF has exactly
+`result.pageCount` pages because it emits one per `Page`. This is the
+proof of acceptance criterion 4 and is asserted directly.
+
+### 2.6 Imposition (`src/export/impose.ts`, pure)
 ```ts
-{ fontMinPt: 9, fontMaxPt: 13,       // hard rails: FONT_SIZE_MIN..FONT_SIZE_MAX (7..18)
-  spacingMin: 1.15, spacingMax: 1.6, // hard rails: LINE_SPACING_MIN..MAX (1.0..2.5)
-  marginsMinPct: 75, marginsMaxPct: 125 } // hard rails: 50..150
+interface ImpositionOptions { sheetsPerSignature: number; flip: "long-edge" | "short-edge" }
+const DEFAULT_IMPOSITION = { sheetsPerSignature: SHEETS_PER_SIGNATURE, flip: "long-edge" }
+
+interface PlacedPage { source: number | null; rotation: 0 | 180 } // 1-based page, null = blank
+interface SheetSide { left: PlacedPage; right: PlacedPage }        // one printed side
+interface ImpositionPlan {
+  sides: SheetSide[];        // in print order; even index = front, odd = back
+  paddedPageCount: number;   // pageCount rounded up to a whole number of sheets
+  signatureCount: number;
+}
+imposeBook(pageCount: number, options: ImpositionOptions): ImpositionPlan
 ```
-`clampBounds` clamps each value to its rails and enforces min ≤ max by
-raising the max to the min when they cross (deterministic, no swap).
-Editing a bound in the UI flows through `clampBounds`.
 
-**Base design (`budgetBase`).** Margin percentages are relative to the
-binder's own margins, so repeated solves must not compound. `Studio` keeps
-a `budgetBase` snapshot: the working design as of the last *manual* change
-(any dial edit, Reset, or initial load). Solver outcomes update the working
-design but never `budgetBase`. Every solve request carries `budgetBase` as
-its base; its non-lever fields are also the ones carried into candidates.
+**Padding and signatures.** `PAGES_PER_SHEET = 4`. Round `pageCount` up to
+`paddedPageCount`, a multiple of 4. Split into signatures of
+`sheetsPerSignature * 4` pages each; the final signature takes the
+remainder (still a multiple of 4, so it may hold fewer sheets than
+configured). Padding pages (`source > pageCount`) render blank.
 
-### 2.4 Predictor (search accelerator, never user-visible)
-`predictPages(ref, candidate)` estimates a candidate's page count from the
-last settled pass:
+**Per-signature saddle-stitch order.** For a signature of `n` pages
+(local 1..n, global = signatureStart + local), `sheets = n / 4`, for each
+sheet `k` in `0..sheets-1`:
+- front side: left = `n - 2k`, right = `1 + 2k`
+- back side:  left = `2 + 2k`, right = `n - 1 - 2k`
 
-- `candLines = ref.stats.totalLines × (candSizePt / refSizePt) × (refColumnPx / candColumnPx)`
-  (advance widths scale close to linearly with font size for one family;
-  column width comes from `computeMetrics`).
-- `overhead = ref.pageCount − ceil(ref.stats.totalLines / refBodyLinesPerPage)`
-  (opener capacity loss, blank versos, per-chapter remainders; treated as
-  design-independent).
-- `predicted = max(1, ceil(candLines / candBodyLinesPerPage) + overhead)`.
+Emit, per signature, for `k = 0..sheets-1`: the front side then the back
+side. Concatenate signatures in order.
 
-The formula's job is only to pick which few candidates get exact counts;
-its constants may be refined during a solve by re-anchoring `ref` to the
-most recent exact count (§2.6 step 4). Unit tests pin its behavior with
-`SyntheticMeasurer`-derived stats, not against real fonts.
-
-### 2.5 Protocol and client (additive)
-- **`SolveMessage`** (main → worker):
-  ```ts
-  { type: "solve"; requestId: number; targetSheets: number;
-    base: DesignSpec; bounds: BudgetBounds }
-  ```
-  Enters the same `currentRequestId` latest-wins stream as `paginate`:
-  a newer paginate or solve makes an in-flight solve stale.
-- **`DoneMessage` gains two fields** (present on every done, paginate or
-  solve):
-  - `stats: PassStats` — `{ totalLines, openerPages, blankPages }`,
-    tallied while pages are assembled (cheap, no extra pass).
-  - `solve?: SolveOutcome` — present only when the request was a solve:
-    ```ts
-    { targetSheets: number;
-      sheets: number;                  // exact, = sheetsForPages(result.pageCount)
-      design: DesignSpec;              // the applied (winner) design
-      achieved: "hit" | "closest" | "clamped-dense" | "clamped-roomy";
-      passes: number }                 // exact counts run, for tests/telemetry
-    ```
-    `hit`: |sheets − target| ≤ 1 (the stated tolerance). `closest`: bounds
-    allow the region but the lattice has no design within tolerance; the
-    nearest real count was applied. `clamped-dense` / `clamped-roomy`: the
-    target lies beyond the densest/roomiest end of the ladder; the boundary
-    design was applied and `sheets` is its exact count (this is the
-    "achievable range" report: the exact reachable count on the side the
-    user pushed past).
-- **`EngineClient.solve(request, handlers)`** — dispatches like `paginate`
-  (sets the active request, measures timings from dispatch, publishes to
-  `__BINDERY_ENGINE_TIMINGS__` on done, so e2e reads solve timings from the
-  existing hook). `PaginateHandlers.onDone` gains the optional trailing
-  data: `onDone(result, timings, stats, solve?)`. `EngineClientLike` adds
-  `solve?` as optional; test fakes default it to a no-op or scripted
-  responder. If `paginate` is called before `load` completes, the existing
-  queue behavior stands; `solve` may assume the book is loaded because the
-  UI only enables the slider after the first settle (worker still guards:
-  a solve with no held document posts the existing error message).
-
-### 2.6 The solve, worker-side (`src/engine/solve.ts`)
-On `solve` the worker, after `ensureFontLoaded` for the base's face
-(cached no-op in the normal flow, staleness re-checked after the await):
-
-1. **Reference stats.** Use the retained stats of the last completed pass
-   (the worker stores `{ design, pageCount, stats }` after every done). If
-   none exist (defensive; the UI gates on first settle), run one exact
-   count of `base` first and use it as the reference.
-2. **Ladder + prediction.** Build `ladderCandidates(base, bounds)`;
-   predict every candidate's sheets (pure arithmetic). If the target is
-   beyond the predicted densest end, the working candidate is index 0; if
-   beyond the roomiest, the last index; otherwise the best-predicted
-   candidate.
-3. **First feedback.** Start the working candidate's `runEngine` pass and
-   forward its first `progress` event to the main thread (this is the
-   sub-100ms streamed feedback). Continue draining it to completion as an
-   exact count, slicing every ~12ms with the same yield-and-`isStale`
-   discipline as `driveEngine`; abandon promptly when superseded.
-4. **Verify and correct.** After each exact count, re-anchor the predictor
-   to that count and re-pick. Run further exact counts only while the best
-   real result is off by more than 1 sheet, the re-pick names an uncounted
-   candidate, and fewer than `MAX_SOLVE_PASSES = 3` counts have run.
-   Track the best real result: smallest |sheets − target|; ties prefer
-   sheets ≤ target (fits the paper the binder has), then the roomier
-   design.
-5. **Finish.** The winner's full `PaginationResult` was already assembled
-   by its count pass (results are kept per counted candidate; at most 3
-   are alive, then released). Post `progress` with the winner's first
-   pages (skip when the winner was the streamed candidate from step 3),
-   then `done` with the winner's result, stats, and the `SolveOutcome`
-   (`achieved` per §2.5: clamped when step 2 chose a boundary because the
-   target was beyond it; else hit/closest by the ±1-sheet tolerance).
-   Retain the winner as the new last-pass stats.
-
-**Special case, free of engine work:** if `targetSheets` equals the sheets
-of the last settled pass and that pass's design is the current one, the
-worker replies immediately with the retained result and `achieved: "hit"`.
-Dragging to where you already are never redesigns the book.
-
-**Determinism.** No randomness, no clocks in decisions (slicing timing
-affects only yield cadence, never the chosen winner: the candidate order,
-prediction, correction rule, and tie-breaks are pure). Same document, base,
-bounds, and target always apply the same design.
-
-**Budget arithmetic** (why this fits ~2s on 300k words): the predictor
-costs microseconds; exact counts run against a warm word-width cache, so
-they are Map-lookup line breaking plus page assembly, no canvas calls at
-already-seen sizes and one cache fill at a new size; at most 3 counts run
-and the winner's result is reused rather than re-laid-out, so the only
-post-search cost is the structured clone of one result. If measurement on
-the 300k fixture still exceeds the budget, reduce `MAX_SOLVE_PASSES` to 2
-and/or replace the worker's `setTimeout(0)` yield with a `MessageChannel`
-yield (worker-internal, both paths' behavior covered by existing tests).
-
-### 2.7 BookPreview wiring (additive props, no fork)
-`BookPreview` gains:
-```ts
-budget?: { target: number; base: DesignSpec; bounds: BudgetBounds; seq: number } | null;
-onSolveOutcome?: (outcome: SolveOutcome) => void;
-onSettled?: (settled: { design: DesignSpec; pageCount: number; stats: PassStats }) => void;
+**Golden orderings (the automated proof).** A single 8-page signature
+(`sheetsPerSignature` large enough to hold it, long edge) yields, as
+`[left, right]` per side in print order:
 ```
-- **Solve effect**, keyed on `budget?.seq`: debounce ~16ms (the existing
-  `REFLOW_DEBOUNCE_MS` pattern), set `reflowing` on the mounted state, then
-  `engine.solve({targetSheets, base, bounds}, handlers)` with the SAME
-  handlers as `startPaginate` plus outcome handling. Latest-wins in the
-  client and worker supersedes older drags automatically.
-- **On solve done:** before committing, set
-  `committedRef.current = solve.design` and pass the *same object* to
-  `onSolveOutcome`. Studio then calls `setDesign(solve.design)`; the
-  design-change effect sees `prev === design` (reference equality) and
-  does nothing, so the solved result is never re-paginated. Commit the
-  result exactly as a paginate done does (`ready`, producing design =
-  `solve.design`, scroll anchor restored, empty/error paths unchanged).
-- **`onSettled`** fires on every done (paginate or solve) with the design,
-  page count, and stats from the message. Studio uses it for the readout
-  and the slider range; nothing is recomputed from the pages array on the
-  main thread.
-- A manual design change while a solve is in flight follows the existing
-  path: the paginate supersedes the solve (higher request id), the solve's
-  handlers are dropped by the client, and no stale outcome arrives.
+front0 [8, 1]   back0 [2, 7]   front1 [6, 3]   back1 [4, 5]
+```
+A single 16-page signature yields:
+```
+front0 [16,1]  back0 [2,15]  front1 [14,3]  back1 [4,13]
+front2 [12,5]  back2 [6,11]  front3 [10,7]  back3 [8,9]
+```
+These match the standard saddle-stitch tables and are pinned in
+`impose.test.ts`. They are also the reference for the physical fold test
+(below): if a physical fold of the sample proves the nesting differs, the
+formula and these goldens change together, since the criterion is
+"folds into correct reading order," proven physically.
 
-### 2.8 Studio and the slider surface
-- **State.** `Studio` adds: `bounds` (init `loadBounds()`), `budgetBase`
-  (init = the loaded design; updated on every manual `onChange` and on
-  Reset, never on solve outcomes), `settled` (latest `onSettled` payload,
-  null until first settle), `budgetRequest` (the `budget` prop value;
-  bumped `seq` per slider commit), and `solving` (true from slider commit
-  until outcome or supersession).
-- **Outcome application.** `onSolveOutcome(outcome)`: `setDesign(
-  outcome.design)` (same object, per §2.7), persist it through the existing
-  debounced `saveDesign`, store the outcome for the readout, clear
-  `solving`. The EPIC 4 dials now display the solver's choices, because
-  they are controlled by the same design.
-- **Bounds edits** flow through `clampBounds`, persist via `saveBounds`,
-  and update the slider range; they never touch the design or trigger a
-  solve by themselves.
-- **Slider range.** min/max = predicted sheets at the ladder's ends for
-  (`budgetBase`, `bounds`, `settled` stats), floored/ceiled outward,
-  clamped to ≥ 1, and widened if needed to include the current settled
-  sheet count. Endpoints are estimates for drag range only; outcomes stay
-  exact via clamping (§2.5). When min equals max (a very small book), the
-  slider renders disabled with the normal readout.
-- **Layout.** `BudgetSlider` renders at the top of the control column,
-  above `ControlPanel`, inside the same `.studio__work` flow: first thing
-  a binder meets on mobile, beside the preview on desktop. Until the first
-  settle it renders disabled with the readout showing the laying-out state.
-- **`BudgetSlider.tsx` props:**
+**Duplex flip.** `long-edge` (default): back sides as written, `rotation:
+0`. `short-edge`: the printer flips the reverse on the short edge, so each
+**back** side is rotated 180 and its two pages swap positions
+(`left`/`right` exchanged, both `rotation: 180`). Front sides are never
+rotated. A golden test pins the short-edge transform of the 8-page case.
+
+### 2.7 Signature PDF and the worker
+`buildSignatures` takes the already-built typeset `PDFDocument`, embeds its
+pages once (`embedPages` -> shared XObjects, so page content is never
+duplicated in memory), and for each `SheetSide` creates one PDF page at the
+folded-sheet size `(2 * trimW) x trimH` in points, landscape. It draws the
+`left` page in the left half and the `right` page in the right half at true
+trim size, applying each `PlacedPage.rotation`. A `source` past
+`pageCount` (padding) or `null` draws nothing (blank). Signature PDF page
+count equals `plan.sides.length`.
+
+**Export worker flow (`export.worker.ts`):**
+1. Receive `ExportRequest { requestId, result, design, docMeta, imposition }`.
+   `result` and `docMeta` cross by structured clone (one-time cost per
+   export; the pages are the exact settled result from the preview).
+2. Resolve the face (`export/fonts.ts`) and `fetch` its regular-weight
+   embed bytes same-origin. On a fetch failure post `ExportError`
+   (product-voice).
+3. `buildTypeset` with an `onProgress` that posts `ExportProgress
+   { phase: "typeset", page, total }` every ~50 pages.
+4. `imposeBook(result.pageCount, imposition)`, then `buildSignatures` with
+   `onProgress` posting `{ phase: "impose", side, total }` every ~50 sides.
+5. Save both docs to bytes and post `ExportDone { requestId, typeset,
+   signatures }` transferring both `ArrayBuffer`s. Latest-wins: if a newer
+   `requestId` arrived, drop the stale one before posting.
+
+**Main thread never blocks.** All pdf-lib work is in the worker. The main
+thread only builds `docMeta`, forwards progress to the UI, and on done
+turns two `ArrayBuffer`s into downloads (§2.9). A rAF/interaction check in
+e2e proves the surface stays live during a 300k export.
+
+**Memory (no OOM on 300k).** One subset font per doc; typeset pages embedded
+as shared XObjects in the signature doc (not redrawn); progress rather than
+buffering strings; transfer (not copy) the results back. These bound peak
+memory to roughly one typeset doc plus its shared-page signature doc.
+
+### 2.8 Protocol, client, and UI wiring
+- **`export/protocol.ts`:**
   ```ts
-  { min, max, value: number;            // value = last outcome/settled sheets, or drag value while dragging
-    disabled: boolean;
-    solving: boolean;
-    readout: Readout;                    // discriminated: settled | solving | clamped | closest
-    bounds: BudgetBounds;
-    onTarget(sheets: number): void;      // fired per input event; Studio bumps seq
-    onBounds(next: BudgetBounds): void }
+  interface ExportRequest { requestId: number; result: PaginationResult;
+    design: DesignSpec; docMeta: DocMeta; imposition: ImpositionOptions }
+  interface ExportProgress { type: "progress"; requestId: number;
+    phase: "typeset" | "impose"; done: number; total: number }
+  interface ExportDone { type: "done"; requestId: number;
+    typeset: ArrayBuffer; signatures: ArrayBuffer }
+  interface ExportError { type: "error"; requestId: number; message: string }
   ```
-  The range input updates its thumb and the visible target text
-  synchronously on `input` (that is the in-frame control feedback), sets
-  `aria-valuetext` to "N sheets", and carries a real label. The readout is
-  a polite `aria-live` region. The Bounds disclosure is a native
-  `<details><summary>Bounds</summary>…</details>` holding six labeled
-  number inputs (§4 for labels), each ≥ 44px, wrapping cleanly at 390px.
+- **`export/client.ts` (`ExportClient`)** creates the worker lazily, posts a
+  request with a monotonic `requestId`, forwards progress, resolves the
+  active request on done, rejects on error, and ignores stale replies. It
+  exposes `export(request, handlers)` and `dispose()`, and a
+  `ExportClientLike` interface plus a test fake, matching `engine/client.ts`
+  conventions. A timings hook is not required.
+- **`BookPreview`** gains:
+  ```ts
+  exportRequest?: { seq: number; imposition: ImpositionOptions } | null;
+  onExportState?: (state: ExportUiState) => void; // idle | { phase, pct } | error | done
+  ```
+  An effect keyed on `exportRequest?.seq`, active only when
+  `state.status === "ready"`, builds `docMeta` from `document`, and calls
+  the export controller with `state.result`, `renderDesign`, and the
+  request's `imposition`. It forwards progress and, on done, saves both
+  files via `download.ts` and reports `done`; on error reports `error`.
+  A new seq while one export runs supersedes it (latest-wins in the client).
+  Export never mutates preview state, never re-paginates, and never blanks.
+- **`Studio`** gains `imposition` (init `DEFAULT_IMPOSITION`, optional
+  persist via a small `bindery.print` localStorage key), an `exportSeq`
+  bumped on Export click, and passes `exportRequest = { seq, imposition }`
+  to `BookPreview`. It receives `onExportState` and forwards it to
+  `ControlPanel` for the button's live label. The print-setup edits update
+  `imposition` only; they never touch the design or trigger a solve.
+- **`ControlPanel`** replaces the disabled Export placeholder with a live
+  button that is enabled once the preview has settled at least one page and
+  disabled while `exportState.phase` is set; it shows the progress label
+  during a run and the error/next-step message on failure. Below it, a
+  `<details><summary>Print setup</summary></details>` holds two labeled
+  controls: **Sheets per signature** (a select of whole-sheet options,
+  default `SHEETS_PER_SIGNATURE`) and **Duplex flip** (Long edge / Short
+  edge). Export stays the single primary action in the column.
 
-### 2.9 Persistence (`src/ui/budget/persistBudget.ts`)
-`saveBounds` writes `{ v: 1, bounds }` to `localStorage["bindery.budget"]`;
-`loadBounds` parses, forward-merges unknown/missing keys onto
-`DEFAULT_BOUNDS`, clamps through `clampBounds`, and returns defaults on any
-error. All access is try/caught (private mode degrades silently). The
-stored value is bounds only: no target, no file data, no book text, no PII.
-The working design the solver produced persists through the existing
-`bindery.design` path untouched, because every solver output is a valid
-dial-lattice design (§2.3).
+### 2.9 Download (`src/export/download.ts`)
+`saveBytes(bytes, filename)` wraps a `Blob` (`type:
+"application/pdf"`), creates an object URL, clicks a transient `<a
+download>`, and revokes the URL. On Export done, save the typeset file then
+the signature file (a short tick apart so a browser does not suppress the
+second), and also surface two visible download links in the status area as
+a fallback if the browser blocked an automatic save. `filenameSlug(title,
+suffix)` lowercases the book title, keeps `[a-z0-9]`, joins runs with a
+single hyphen, falls back to `book` when empty, and appends `-typeset.pdf`
+or `-signatures.pdf`. No spaces, no em dash, no en dash in filenames.
 
-### 2.10 Accessibility and determinism
-- Slider: `<label>` plus visible value; `aria-valuetext` in sheets; 44px
-  thumb; keyboard arrows adjust by 1 sheet and commit like a drag.
-- Readout: single polite live region; `aria-busy` on the preview during a
-  solve comes free from the existing `reflowing` flag.
-- Bounds: six labeled native inputs inside `fieldset`/`legend` within the
-  disclosure; focus visible via the existing `:focus-visible` rule;
-  keyboard reaches everything including the summary toggle.
-- Determinism: `budget.ts` and `solve.ts` are pure over their inputs; no
-  `Date.now`/`Math.random` in any decision; the same drag on the same book
-  always lands the same design and readout. No book text in any new
-  message, log, or error.
+### 2.10 Determinism, security, accessibility
+- **Determinism.** `impose.ts`, `geometry.ts`, `lineText.ts`, and `pdf.ts`
+  are pure over their inputs; no `Date.now`/`Math.random` anywhere in the
+  build. The same result, design, and imposition options always produce
+  byte-comparable PDFs (page counts, sizes, imposition order stable).
+- **Security / no upload.** No server, no new outbound path. The only
+  network calls are same-origin GETs for the embed font files (app assets,
+  like the existing woff2). The book file's bytes are never in any request.
+  No book text or PII in any log, message, or error. Storage access
+  (`bindery.print`) is try/caught and degrades silently.
+- **Accessibility.** The Export button is a real `<button>` with a visible
+  label and `aria-busy` during a run; progress is one polite live region;
+  the print-setup controls are labeled native inputs inside a
+  `fieldset`/`legend` within the disclosure; focus visible via the existing
+  `:focus-visible` rule; keyboard reaches the button, the disclosure
+  summary, and every control; targets clear 44px at 390px.
 
 ---
 
 ## 3. Ordered task list (each maps to acceptance criteria)
 
-### T1 — Pure budget math (`src/engine/budget.ts`, `persistBudget.ts`)
-Sheet/signature arithmetic, `BudgetBounds` + `clampBounds` + defaults,
-`ladderCandidates`, `predictPages`, `SolveOutcome` type; bounds
-persistence. All pure, jsdom-safe.
-**AC (Vitest):** `sheetsForPages` and `signaturesForSheets` match hand
-computations including edges (0/1 pages → 1 sheet floor honored, exact
-multiples); `clampBounds` clamps to rails and resolves min>max
-deterministically; `ladderCandidates` output is deduped, densest-first,
-every candidate on the dial lattice (font 0.5pt grid, spacing 0.05,
-margins per-unit rounded, `clampMargins` respected) and inside the given
-bounds, non-lever fields carried verbatim from base; `predictPages` is
-exact when candidate = reference and scales in the right direction for
-size/column/leading changes; `loadBounds`/`saveBounds` round-trip, merge
-forward, clamp, and never throw with storage absent or poisoned.
+### T1 — Pure export math and text (`geometry.ts`, `lineText.ts`, `impose.ts`)
+px->pt helpers and the baseline model; the extracted soft-hyphen display
+rule (with `PageView` switched to call it, behavior unchanged); the
+imposition planner with padding, signature splitting, saddle-stitch order,
+and the flip transform.
+**AC (Vitest, jsdom-safe):** `pxToPt` and `pagePointBox` invert the CSS-px
+geometry correctly; `displayLineText` returns exactly what `PageView`
+rendered before (a snapshot over hyphenated and plain lines); `imposeBook`
+matches the pinned 8-page and 16-page goldens, pads non-multiples of 4 to
+whole sheets, splits into signatures with a possibly-shorter last one, and
+applies the short-edge transform (back sides swapped and rotated 180, fronts
+untouched); every `PlacedPage.source` is either a valid 1..paddedPageCount
+index or null; two identical calls are equal.
 
-### T2 — Worker solve (`solve.ts`, `protocol.ts`, `client.ts`, worker)
-`SolveMessage`, `DoneMessage.stats` + `solve`, `EngineClient.solve`,
-last-pass stats retention, and `runSolve` with slicing, staleness, the
-correction loop, tie-breaks, and winner reuse.
-**AC (Vitest, `SyntheticMeasurer` + fake transport):** every `done` now
-carries stats whose `totalLines` matches the result's pages; a solve
-toward an in-range target applies a design within ±1 sheet with
-`achieved: "hit"` and `passes ≤ 3`; a target below the densest end
-applies the t=0 boundary design with `achieved: "clamped-dense"` and its
-exact sheets (mirror for `clamped-roomy`); for a grid of targets across
-the range, every applied design and every counted candidate respects the
-bounds and hard floors (never violated to get closer); a newer request id
-arriving mid-count abandons the solve with no further posts; target ==
-current sheets with unchanged design replies from the retained result
-without an engine pass; two identical solves yield identical outcomes.
-EPIC 2's engine/worker suites pass unchanged.
+### T2 — Font resolution and embedding assets (`fonts.ts`, catalog, assets)
+Add `embed` URLs to embeddable catalog entries; add the four faces' TTF/OTF
+under `public/fonts/embed/` (same upstream release as the woff2); record
+them in `PROVENANCE.md`; `export/fonts.ts` resolves a design to the face to
+embed, mapping the system serif to the designated fallback serif.
+**AC (Vitest):** `resolveExportFont` returns the matching embed URLs for
+each OFL face and the fallback serif's URLs for the system serif; the embed
+files exist and are non-empty; on-screen `catalog` lookups and
+`loadFontFace` behavior are unchanged (existing font tests pass).
 
-### T3 — BookPreview budget wiring (`BookPreview.tsx`)
-The `budget` prop effect (debounced), shared done handling with
-`committedRef` pre-set and object-identity outcome flow, `onSettled` on
-every done.
-**AC (Vitest, fake engine):** bumping `budget.seq` calls `engine.solve`
-once (debounced) with target, base, and bounds; during the solve the
-mounted book stays (bounded node count) and `aria-busy` is set; on a solve
-done the new result renders with the winner design, scroll anchoring runs,
-and `onSolveOutcome` receives the same design object later passed back as
-the `design` prop WITHOUT triggering another paginate; `onSettled` fires
-with pageCount and stats on both paginate and solve dones; empty/error
-paths and copy unchanged.
+### T3 — PDF builders (`pdf.ts`)
+`buildTypeset` (one page per `Page`, mirrored geometry, headers/folios,
+embedded subset font, blank pages) and `buildSignatures` (folded-sheet
+pages, two embedded typeset pages per side, rotation per plan).
+**AC (Vitest, pdf-lib in jsdom, `SyntheticMeasurer`-built results):**
+loading the typeset bytes back yields exactly `result.pageCount` pages,
+each at the trim size in points for its side; the document carries an
+**embedded, subsetted** font (a font descriptor with an embedded FontFile
+stream and a subset tag), proving the "renders without the font" criterion;
+the signature bytes load to `plan.sides.length` pages at the folded-sheet
+size; a small book with a page count not divisible by the signature size
+produces trailing blank cells in the last signature and no error; building
+never throws on a blank-only or single-page result.
 
-### T4 — BudgetSlider (`BudgetSlider.tsx`)
-Slider, target text, readout states, Bounds disclosure with clamped
-editing.
-**AC (Vitest + Testing Library):** the thumb and visible target update in
-the same event as an input change and `onTarget` fires with the integer
-sheet value; keyboard arrows commit; `aria-valuetext` reads "N sheets";
-disabled state before first settle; each readout variant renders its §4
-string exactly (settled, solving, closest, clamped both sides) inside one
-polite live region; bounds inputs are labeled, fire `onBounds` through
-`clampBounds` (crossed min/max resolved), and never emit values outside
-the rails; a copy-sweep test over the component's strings finds no em/en
-dash, no banned vocabulary, no negative phrasing.
+### T4 — Export worker, protocol, client (`export.worker.ts`, `protocol.ts`, `client.ts`, `download.ts`)
+Wire the worker to fetch font bytes, run both builders with progress, and
+transfer both results; the main-thread client with latest-wins and dispose;
+the download helper and filename slug.
+**AC (Vitest with a fake worker / mocked fetch):** an export request drives
+both phases and resolves with two non-empty byte arrays; progress messages
+arrive for both `typeset` and `impose` phases with monotonic `done`; a
+newer `requestId` supersedes an in-flight export and the stale done is
+dropped; a font fetch failure yields a product-voice `ExportError`;
+`filenameSlug` lowercases, hyphenates, strips punctuation, falls back to
+`book`, and never emits a space or dash-aside; `saveBytes` builds a
+`application/pdf` blob and revokes its URL.
 
-### T5 — Studio integration (`Studio.tsx`, styles)
-Budget state, `budgetBase` snapshot rules, outcome application +
-persistence, slider range derivation, layout and CSS.
-**AC (Vitest):** a slider commit sets the `budget` prop with the CURRENT
-`budgetBase` and bounds; a solve outcome sets the design (dials reflect
-the solver's font size), persists via `saveDesign`, and does not move
-`budgetBase`; a manual dial change updates `budgetBase` and clears any
-pending solve display state; bounds edits persist via `saveBounds` and
-re-derive the slider range; range includes the current settled sheets and
-collapses to a disabled slider when min == max; existing `Studio` and
-`App` suites pass.
+### T5 — Preview and Studio wiring (`BookPreview.tsx`, `Studio.tsx`)
+The `exportRequest` effect off `state.result`, `onExportState`, export
+request state and print-setup options in Studio, optional persistence.
+**AC (Vitest, fake export client):** bumping `exportRequest.seq` calls the
+client once with the current `result`, `renderDesign`, and `imposition`;
+export does not re-paginate, does not blank the mounted book, and does not
+move scroll; progress flows to `onExportState`; on done both files are
+saved (the download helper is called twice); on error the error state is
+reported; print-setup edits change `imposition` only and never trigger a
+paginate or solve; existing `BookPreview`, `Studio`, and `App` suites pass.
 
-### T6 — e2e budget harness (`e2e/budget.spec.ts`)
+### T6 — ControlPanel Export surface and styles (`ControlPanel.tsx`, styles)
+Replace the disabled placeholder with a live button and its idle/progress/
+error states; the print-setup disclosure with two labeled controls; CSS for
+the progress affordance and the disclosure at 390px.
+**AC (Vitest + Testing Library):** the button is disabled before the first
+settled page and enabled after; clicking it fires the export callback once;
+during a run it is `aria-busy` and shows the progress label; the error
+state shows the §4 message with a next step; print-setup controls are
+labeled, default to `SHEETS_PER_SIGNATURE` and Long edge, and fire their
+change callbacks; a copy-sweep test over the component's strings finds no
+em/en dash, no banned vocabulary, and no negative phrasing.
+
+### T7 — e2e export harness (`e2e/export.spec.ts`)
 Against the production build, Chromium:
-- **Budget on 300k:** open Middlemarch, settle, read current sheets from
-  the readout; drag to ~80% of current; read
-  `__BINDERY_ENGINE_TIMINGS__`: `firstFeedbackMs ≤ 100`,
-  `settleMs ≤ 2000`; readout sheets within ±1 of target; a page leaf
-  stayed mounted throughout and scroll position was preserved.
-- **Solver honesty:** in Bounds, raise font min to equal font max and
-  narrow spacing to one step; drag to a target far below the reachable
-  range; assert the clamped readout appears with a concrete sheet count,
-  the Font size dial still shows a value inside [min, max], and no margin
-  input shows less than the floor.
-- **Dials follow the solver:** after a successful solve, the Font size
-  and Line spacing inputs display the solver's chosen values, and a
-  reload restores them (existing design persistence).
-- **Sample, first minute:** from a fresh page, open the sample, drag the
-  slider once, assert the readout updates to a real sheet count and the
-  preview re-flowed, all within the test's default timeout.
-- **390px:** slider, readout, and opened Bounds usable at 390×780 with no
-  horizontal scroll.
-**AC:** all pass; `pagination.spec.ts`, `preview.spec.ts`, and
-`typography.spec.ts` pass unchanged.
+- **Sample dual export (first minute, no file):** open the sample, click
+  Export, capture both `download` events, assert two `*.pdf` files save and
+  each is a non-empty valid PDF (loads with a positive page count).
+- **No upload:** with request interception, assert no cross-origin request
+  and that no request body carries the book bytes across the whole export
+  (same-origin font-asset GETs allowed), mirroring `import.spec.ts`.
+- **300k progress, live surface, no freeze:** open Middlemarch, settle,
+  click Export; assert the progress label advances through both phases, the
+  studio stays interactive during the export (a control responds / the
+  slider is still operable), and both downloads complete within a generous
+  timeout without a crash.
+- **Print setup:** open the disclosure, choose Short edge and a different
+  sheets-per-signature, export the sample, and assert the export still
+  completes and saves two files.
+- **390px:** Export button and opened print-setup usable at 390x780, ~44px
+  targets, no horizontal scroll.
+**AC:** all pass; `import.spec.ts`, `pagination.spec.ts`, `preview.spec.ts`,
+`typography.spec.ts`, and `budget.spec.ts` pass unchanged.
 
-### T7 — README + copy sweep
-Update the README: the "Right now it…" paragraph gains the paper-budget
-slider (and stops listing it as a later milestone), the code map gains
-`src/ui/budget/` and `src/engine/budget.ts`/`solve.ts`, the e2e list gains
-the budget spec. Mechanically sweep every added or edited user-visible
-string.
-**AC:** README accurate against the shipped behavior and verified
-commands; sweep over all strings added in T1–T6 and this spec's §4 finds
-no "—"/"–", no banned vocabulary, no negative empty-state phrasing.
+### T8 — README + copy sweep + recorded fold test
+Update the README: the "Right now it..." paragraph gains the dual export
+and stops listing PDF/imposition as a later milestone; the code map gains
+`src/export/` and `public/fonts/embed/`; the e2e list gains the export
+spec. Print and fold the sample's signature PDF once and record the result.
+Mechanically sweep every added or edited user-visible string.
+**AC:** README accurate against shipped behavior with verified commands; the
+physical fold of the sample reads in order and is recorded in
+`result.json`'s `summary`; the sweep over all strings added in T1–T7 and
+this spec's §4 finds no "—"/"–", no banned vocabulary, and no negative
+empty-state phrasing.
 
 ---
 
 ## 4. Copy (swept reference — ship these or better)
 All strings below are swept: no em/en dashes, no banned vocabulary, no
-negative phrasing. Numbers are examples.
+negative phrasing. Numbers and titles are examples.
 
-- Slider label: **Fit into**; value text beside it: **52 sheets**
-- Readout, settled or hit: **52 sheets · 13 signatures of 4 sheets**
-- Readout, while solving: **Fitting your book**
-- Readout, closest (lattice gap): **Closest inside your bounds: 54 sheets**
-- Readout, target below reach: **Your bounds reach 61 sheets at the
-  tightest. Loosen a bound to go lower.**
-- Readout, target above reach: **Your bounds reach 44 sheets at the
-  roomiest. Loosen a bound to go higher.**
-- Before the first settle: **Laying out your book**
-- Disclosure summary: **Bounds**
-- Bounds labels: **Font size min (pt)**, **Font size max (pt)**,
-  **Line spacing min**, **Line spacing max**, **Margins min (%)**,
-  **Margins max (%)**
+- Export button, idle: **Export**
+- Export hint (kept): **Export saves a print-ready PDF.**
+- Export button/label while typesetting: **Typesetting page 240 of 903**
+- While imposing: **Building signatures**
+- On completion, status line: **Saved two files.**
+- Fallback download links: **Save typeset PDF**, **Save signatures PDF**
+- On failure: **The export stopped before it finished. Try again.**
+- Disclosure summary: **Print setup**
+- Print-setup labels: **Sheets per signature**, **Duplex flip**
+- Duplex options: **Long edge**, **Short edge**
+- Filenames: **middlemarch-typeset.pdf**, **middlemarch-signatures.pdf**
+  (slug of the book title; `book-typeset.pdf` when the title is empty)
 
-Sheet and signature figures are book data and exempt from the sweep, but
-the sentences around them are not. Sweep before done: reject "—"/"–", the
-banned vocabulary list, and negative openers in every string added to
-`BudgetSlider.tsx`, `Studio.tsx`, worker error messages, and the README.
+Book titles, author names, and chapter titles in running heads are book
+data and exempt from the sweep; the product copy around them is not. Sweep
+before done: reject "—"/"–", the banned vocabulary list, and negative
+openers in every string added to `ControlPanel.tsx`, `Studio.tsx`, the
+export worker's error messages, `download.ts`, and the README.
 
 ---
 
 ## 5. Test plan (which automated test proves each criterion)
 
-### 5.1 Unit / integration (Vitest + jsdom)
+### 5.1 Unit / integration (Vitest + jsdom; pdf-lib runs headless)
 | Criterion | Test |
 |---|---|
-| Sheet/signature math exact | `budget.test.ts`: hand-computed tables incl. edges |
-| Ladder valid, in-bounds, on-lattice, deterministic | `budget.test.ts`: lattice/bounds/dedup/order asserts |
-| Bounds clamped, persisted, crash-free | `budget.test.ts` + `persistBudget.test.ts` |
-| Solver hits within ±1 sheet or reports honestly | `solve.test.ts`: in-range grid → hit; boundary targets → clamped with exact count |
-| Bounds never violated to hit a target | `solve.test.ts`: every counted candidate and winner inside bounds/floors across a target grid |
-| Latest-wins mid-solve | `solve.test.ts`: staleness during a count stops all posts |
-| No-op target short-circuits | `solve.test.ts`: retained-result reply, zero passes |
-| Deterministic outcomes | `solve.test.ts`: repeat solve equality |
-| Stats on every done | worker/client tests: `stats.totalLines` matches pages |
-| Solve flows through preview without blank/scroll loss or double paginate | `BookPreview.test.tsx` (fake engine): T3 asserts |
-| Slider feedback in-frame; readout states; a11y | `BudgetSlider.test.tsx` |
-| Studio applies outcome, snapshots base, persists | `Studio.test.tsx` |
-| Copy swept | `BudgetSlider.test.tsx` string sweep |
-| Existing suites intact | engine, worker, preview, panel, Studio, App suites unchanged |
+| px->pt and page box match the preview geometry | `geometry.test.ts` |
+| Rendered line text identical to the preview | `lineText.test.ts` snapshot vs `PageView`'s prior output |
+| Imposition folds to reading order (8-page, 16-page) | `impose.test.ts` goldens |
+| Padding to whole sheets; last signature may be shorter | `impose.test.ts` |
+| Short-edge flip transform correct | `impose.test.ts` |
+| Font resolves per face; system serif -> fallback | `fonts.test.ts` |
+| Typeset PDF page count equals the settled result | `pdf.test.ts`: load-back page count == `result.pageCount` |
+| Font is embedded and subsetted (renders without it) | `pdf.test.ts`: font descriptor has an embedded FontFile + subset tag |
+| Typeset page sizes are the trim in points per side | `pdf.test.ts` |
+| Signature PDF page count and folded-sheet size | `pdf.test.ts` |
+| Worker drives both phases; latest-wins; error voice | `client.test.ts` with a fake worker |
+| Filename slug safe and swept | `download.test.ts` |
+| Export flows through the preview without re-paginate/blank | `BookPreview.test.tsx` (fake export client) |
+| Studio bumps a request and applies print setup only | `Studio.test.tsx` |
+| Button states, print-setup controls, copy swept | `ControlPanel.test.tsx` |
+| Existing suites intact | engine, worker, budget, preview, panel, Studio, App suites unchanged |
 
-### 5.2 Browser harness (Playwright, Chromium) — `e2e/budget.spec.ts`
+### 5.2 Browser harness (Playwright, Chromium) — `e2e/export.spec.ts`
 | Criterion | Test |
 |---|---|
-| Drag re-flows 300k book: feedback ≤ 100ms, settle ≤ 2s | timings-hook assert on Middlemarch (T6 test 1) |
-| Target hit within stated tolerance (±1 sheet) | readout vs target on Middlemarch |
-| Never blanks, keeps place | leaf mounted + scrollTop preserved during solve |
-| Honest clamped report, bounds respected | pinched-bounds test (T6 test 2) |
-| Solver output is the real design and persists | dials-follow-solver + reload test |
-| Reachable from the sample, first minute, no file | sample drag test |
-| Mobile 390px | no horizontal scroll, controls usable |
-| EPIC 2/3/4 harnesses unaffected | existing three specs pass unchanged |
+| Both PDFs generate in-browser, no upload | no-upload interception test |
+| Dual export reachable from the sample, first minute | sample export test |
+| Typeset renders without the font (embedded) | proven in `pdf.test.ts`; the sample export produces a valid, openable PDF |
+| 300k exports with progress, no freeze, no OOM | Middlemarch progress + live-surface test |
+| Print setup (sheets-per-signature, flip) works | print-setup export test |
+| Mobile 390px | Export and print-setup usable, no horizontal scroll |
+| EPIC 2/3/4/5 harnesses unaffected | the five existing specs pass unchanged |
 
 ### 5.3 Recorded verification (part of DONE)
-Record in `result.json` `summary`: the observed `firstFeedbackMs` and
-`settleMs` for a slider-driven solve on Middlemarch, the target vs
-achieved sheet count from that run, the number of solve passes, and
-confirmation that the pinched-bounds run reported the clamped count with
-no bound violated.
+Record in `result.json` `summary`: the sample's typeset and signature page
+counts, confirmation that a **physical fold of the sample's signature PDF
+reads in correct order** (the imposition acceptance criterion that cannot
+be automated), the observed export time and peak behavior for the 300k
+book (completed without freeze or OOM), and confirmation that the network
+tab showed no upload of the book during export.
 
 ---
 
 ## 6. Data model / migrations
-No database, no server. Two `localStorage` entries, both forward-only:
-- `bindery.design` (existing, `{v:1, design}`) — untouched; solver output
-  is a valid design under the existing sanitize path.
-- `bindery.budget` (new, `{v:1, bounds}`) — readers merge stored keys onto
-  `DEFAULT_BOUNDS` and clamp via `clampBounds`; unknown keys are ignored,
-  malformed blobs yield defaults. A blob written by any version loads in
-  any other.
-Engine shapes (`DesignSpec`, `Document`, `PaginationResult`) are
-unchanged; `DoneMessage` gains additive fields only, and no old reader of
-that message exists outside this app.
+No database, no server. Storage stays forward-only:
+- `bindery.design`, `bindery.budget` — existing, untouched.
+- `bindery.print` (new, optional, `{ v: 1, imposition }`) — sheets per
+  signature and flip; readers clamp to valid whole-sheet values and a known
+  flip, and return `DEFAULT_IMPOSITION` on any error. It holds no book data.
+Engine shapes (`DesignSpec`, `Document`, `PaginationResult`, all worker
+messages) are unchanged; export consumes them read-only. New committed
+assets: the four faces' TTF/OTF under `public/fonts/embed/` plus their
+provenance, lazy-loaded on export only.
 
 ---
 
 ## 7. QUALITY BAR mapping (binding; budget from the start)
-- **§1 Perceived speed / differentiator:** in-frame thumb + readout
-  feedback; streamed first pages ≤ 100ms; solve settles within ~2s on
-  300k via predictor + bounded exact counts + winner reuse; measured and
-  asserted in e2e; the untouched default path keeps EPIC 2's budgets.
-- **§2 Mobile-first:** slider first in the column at 390px, 44px thumb,
-  bounds inputs wrap, no horizontal scroll; asserted in e2e.
-- **§3 Designed states:** pre-settle disabled state says what is
-  happening; solving state is quiet and layout-stable; clamped state
-  names the reachable count and the next step; the preview never blanks.
-- **§4 First-run:** the sample reaches the signature moment in the first
-  minute with no file (e2e-proven). The guided walkthrough remains
-  EPIC 7's work.
-- **§5 Security hygiene:** no server, no new network path; bounds inputs
-  clamped at the boundary; `localStorage` guarded; no book text or PII in
-  messages, storage, or logs.
-- **§6 Accessibility:** labeled slider with `aria-valuetext`, keyboard
-  commits, labeled bounds inputs in a fieldset, one polite live region,
-  visible focus everywhere.
-- **§7 Radically simple interface:** the slider says its one idea in two
-  words and a number; the readout is one line; bounds hide behind one
-  disclosure; Export remains the single primary action slot.
-- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and
-  a T7 gate.
-- **§9 README:** updated truthfully for the slider; commands unchanged
-  and still verified; no pipeline jargon.
+- **§1 Perceived speed / differentiator:** export runs in a worker with
+  streamed progress, so the studio and the paper-budget slider stay live;
+  the 300k export completes without freezing the UI or running out of
+  memory; the file reproduces the preview exactly (page count and
+  geometry), keeping the trust the re-flow earns. Asserted in e2e and unit.
+- **§2 Mobile-first:** Export and print-setup usable at 390px, ~44px
+  targets, no horizontal scroll; asserted in e2e.
+- **§3 Designed states:** the button has a designed idle, a progress label
+  that names the phase and page, and an error state that says what to do
+  next; the preview never blanks during export.
+- **§4 First-run:** the sample exports two valid PDFs with no user file,
+  reachable in the first minute (e2e-proven). The EPIC 7 guided walkthrough
+  is out of scope.
+- **§5 Security hygiene:** no server, no new outbound path, no book bytes in
+  any request; inputs are a bounded select and a two-way toggle; storage
+  guarded; no book text or PII in logs, messages, or errors.
+- **§6 Accessibility:** labeled Export button with `aria-busy`, one polite
+  progress region, labeled print-setup inputs in a fieldset, keyboard reach
+  and visible focus everywhere.
+- **§7 Radically simple interface:** Export stays the single primary action;
+  print setup hides behind one disclosure with sensible defaults, so the
+  common path is one click.
+- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and a
+  T8 gate.
+- **§9 README:** updated truthfully for dual export; commands verified; no
+  pipeline jargon.
 
-Reconciliation: the slider, solver, bounds, readout, and their tests are
-the scoped work, and meeting the bar on them is in scope. Imposition
-options, cover math, presets, and the walkthrough stay out however
-tempting; if meeting the bar ever appeared to require one of them, that is
-a `blocked`, not a quiet expansion.
+Reconciliation: the two PDFs, the imposition math, the worker, and their
+tests are the scoped work, and meeting the bar on them is in scope. Cover
+math, other formats, and cloud storage stay out however tempting; if
+meeting the bar ever appeared to require one of them, that is a `blocked`,
+not a quiet expansion.
 
 ---
 
 ## 8. Definition of done
-- All seven tasks' ACs met; `lint`, `typecheck`, `test`, and all four
-  Playwright specs green (`budget.spec.ts` new; the other three
-  unchanged).
-- Dragging the slider on Middlemarch gives in-frame control feedback,
-  streamed book feedback ≤ 100ms, and a settled, exact result ≤ ~2s,
-  recorded per §5.3. Exceeding the budget on the 300k fixture is a failed
-  EPIC, not a shipped degradation.
-- The solver lands within ±1 sheet of any reachable target, and reports
-  the exact reachable count with a next step when the target is beyond
-  the bounds. It never violates a user bound or an engine floor.
-- The applied design is the working design: dials reflect it, it persists
-  and reloads, Reset still returns to `DEFAULT_DESIGN`, and repeated
-  solves never compound margin scaling (base snapshot rule).
-- The sample book demonstrates the slider with no user file, within the
-  first minute.
-- A session that never touches the slider is behaviorally identical to
-  EPIC 4: default path, budgets, determinism, and golden page counts
-  unchanged.
+- All eight tasks' ACs met; `lint`, `typecheck`, `test`, and all six
+  Playwright specs green (`export.spec.ts` new; the other five unchanged).
+- One Export click produces a typeset PDF and a signature PDF entirely in
+  the browser, with no upload of the book (network tab confirms).
+- The typeset PDF embeds the book's face (subset) and renders on a machine
+  lacking the font; its page count and page geometry match the preview for
+  the same settings.
+- The signature PDF's sheets fold into correct reading order: the automated
+  8-page and 16-page goldens hold and a physical fold of the sample reads in
+  order (recorded per §5.3).
+- Exporting the 300k-word book shows progress, keeps the UI interactive,
+  and completes without an out-of-memory failure.
+- Print setup (sheets-per-signature, duplex flip) changes the imposition
+  only; it never re-flows the book or moves the design.
+- A session that never exports is behaviorally identical to EPIC 5: default
+  path, budgets, determinism, and golden page counts unchanged.
 
-### Planner AC → coverage
-1. *Dragging the slider re-flows the whole 300k-word book with perceptible
-   feedback under 100ms and a settled result within about 2 seconds* →
-   §2.6 budget arithmetic, T2, T3, T6 test 1; §5.2 row 1; §5.3.
-2. *The solver hits the target sheet count within a stated tolerance, or
-   clearly reports the achievable range when bounds prevent the target* →
-   tolerance stated as ±1 sheet (§2.5); clamped outcomes carry the exact
-   boundary count and the readout names it with a next step (§2.5, §4);
-   T2, T4, T6 test 2; §5.1 solver rows; §5.2 rows 2 and 4.
-3. *The solver respects user-set min/max on font size and margins and
-   never violates a bound to hit a target* → ladder construction (§2.3),
-   bounds-never-violated property tests (T2), pinched-bounds e2e (T6);
-   §5.1 bounds row; §5.2 row 4.
-4. *Reachable from the bundled sample within the first minute with no user
-   file* → T6 sample test; §5.2 row 6.
-5. *Slider copy and readout are plain and positive, swept for banned tells
-   and em-dashes* → §4 reference strings, sweep test in T4, T7 gate;
-   §5.1 copy row.
+### Planner AC -> coverage
+1. *Both PDFs generate entirely in the browser with no upload (network tab)*
+   -> §2.7 worker build, §2.10 no outbound path; T4, T5, T7 no-upload test;
+   §5.2 row 1.
+2. *Fonts are embedded: the typeset PDF renders on a machine lacking the
+   font* -> §2.4 embedding + subset, system-serif fallback; T2, T3
+   embedded-font assertion; §5.1 embedded-font row.
+3. *Imposed signatures fold into correct reading order, verified against
+   known 8-page and 16-page orderings and a physical fold of the sample* ->
+   §2.6 arithmetic and goldens; T1 golden tests; T8 recorded physical fold;
+   §5.1 imposition rows, §5.3.
+4. *The typeset PDF page count matches the on-screen preview for the same
+   settings* -> §2.5 one page per `Page`; T3 load-back count == `pageCount`;
+   §5.1 page-count row.
+5. *Exporting the 300k book shows progress, does not freeze the UI, and
+   completes without an out-of-memory failure* -> §2.7 worker + memory
+   measures, §2.8 progress; T7 300k test; §5.2 row, §5.3.
+</content>
+</invoke>

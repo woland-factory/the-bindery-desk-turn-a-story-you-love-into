@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Document } from "../model/document";
-import type { DesignSpec, Line, Page } from "../engine/types";
-import { SOFT_HYPHEN } from "../engine/lineBreak";
+import type { DesignSpec, Page } from "../engine/types";
+import { displayLineText } from "../export/lineText";
 import { pagePlacement } from "./pageGeometry";
 import { resolveRunningHead } from "./runningHead";
 
@@ -72,7 +72,7 @@ export function PageView({ page, design, doc, scale }: Props) {
                 lineHeight: `${p.lineHeightPx}px`,
               }}
             >
-              {displayText(line)}
+              {displayLineText(line)}
             </div>
           ))}
         </div>
@@ -98,10 +98,4 @@ function runHead(page: Page, design: DesignSpec, doc: Document): string {
   const template = page.side === "verso" ? design.runningHeader.verso : design.runningHeader.recto;
   const chapter = doc.chapters.find((c) => c.order === page.chapterIndex)?.title ?? "";
   return resolveRunningHead(template, { title: doc.title, author: doc.author, chapter });
-}
-
-/** Show the inserted soft hyphen as a visible hyphen at the line end. */
-function displayText(line: Line): string {
-  const bare = line.text.split(SOFT_HYPHEN).join("");
-  return line.hyphenated ? `${bare}-` : bare;
 }
