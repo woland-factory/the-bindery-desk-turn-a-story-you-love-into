@@ -24,11 +24,18 @@ import {
   lineSpacingMultiple,
 } from "./design/designPatch";
 import { presetForTrim, TRIM_PRESETS, type Unit } from "./design/trimPresets";
+import type { ExportUiState } from "./BookPreview";
+import {
+  DEFAULT_IMPOSITION,
+  SHEETS_PER_SIGNATURE_OPTIONS,
+  type ImpositionOptions,
+} from "../export/impose";
 
 // The dials. Native, labeled, controlled inputs over the active design; each
-// change produces a new design via a pure setter and calls onChange. One
-// visually primary slot (Export, reserved for a later EPIC and disabled here);
-// every dial is visibly subordinate. Reset returns to the shipped default.
+// change produces a new design via a pure setter and calls onChange. Export is
+// the one visually primary action; every dial is visibly subordinate. Print
+// setup hides behind a disclosure with sensible defaults, so the common path is
+// one click. Reset returns to the shipped default.
 
 interface Props {
   design: DesignSpec;
@@ -36,6 +43,31 @@ interface Props {
   onReset: () => void;
   /** Called when the Font control gains focus, so the app can warm faces. */
   onFontFocus?: () => void;
+  /** True once the preview has settled at least one page. */
+  canExport?: boolean;
+  /** Live export status, driving the button label and the status line. */
+  exportState?: ExportUiState;
+  /** Fired on an Export click. */
+  onExport?: () => void;
+  /** The imposition options the print-setup controls edit. */
+  imposition?: ImpositionOptions;
+  /** Fired when a print-setup control changes; edits imposition only. */
+  onImposition?: (next: ImpositionOptions) => void;
+}
+
+const FLIP_LABELS: Record<ImpositionOptions["flip"], string> = {
+  "long-edge": "Long edge",
+  "short-edge": "Short edge",
+};
+
+/** The button label while an export runs, naming the phase and page. */
+function exportLabel(state: ExportUiState | undefined): string {
+  if (state?.kind === "running") {
+    return state.phase === "typeset"
+      ? `Typesetting page ${state.done} of ${state.total}`
+      : "Building signatures";
+  }
+  return "Export";
 }
 
 const HEADER_OPTIONS: { value: string; label: string }[] = [
@@ -49,7 +81,17 @@ const DROP_LABELS: Record<number, string> = { 72: "Deep", 36: "Standard", 0: "Mi
 
 const CUSTOM = "custom";
 
-export function ControlPanel({ design, onChange, onReset, onFontFocus }: Props) {
+export function ControlPanel({
+  design,
+  onChange,
+  onReset,
+  onFontFocus,
+  canExport = false,
+  exportState = { kind: "idle" },
+  onExport,
+  imposition = DEFAULT_IMPOSITION,
+  onImposition,
+}: Props) {
   const unit = design.trim.unit;
   const marginStep = unit === "mm" ? 1 : 0.05;
   const marginMin = unit === "mm" ? 4 : 0.15;
@@ -81,10 +123,72 @@ export function ControlPanel({ design, onChange, onReset, onFontFocus }: Props) 
   return (
     <section className="panel" aria-label="Book design">
       <div className="panel__primary">
-        <button type="button" className="btn btn--primary panel__export" disabled>
-          Export
+        <button
+          type="button"
+          className="btn btn--primary panel__export"
+          disabled={!canExport || exportState.kind === "running"}
+          aria-busy={exportState.kind === "running"}
+          onClick={onExport}
+        >
+          {exportLabel(exportState)}
         </button>
         <p className="panel__hint">Export saves a print-ready PDF.</p>
+
+        <p className="panel__status" role="status" aria-live="polite">
+          {exportState.kind === "done"
+            ? "Saved two files."
+            : exportState.kind === "error"
+              ? "The export stopped before it finished. Try again."
+              : ""}
+        </p>
+        {exportState.kind === "done" && (
+          <div className="panel__downloads">
+            {exportState.downloads.map((d) => (
+              <a key={d.filename} href={d.url} download={d.filename} className="panel__download">
+                {d.label}
+              </a>
+            ))}
+          </div>
+        )}
+
+        <details className="panel__print">
+          <summary>Print setup</summary>
+          <fieldset className="panel__print-fields">
+            <legend className="visually-hidden">Print setup</legend>
+            <div className="field">
+              <label htmlFor="sheets-per-signature">Sheets per signature</label>
+              <select
+                id="sheets-per-signature"
+                value={String(imposition.sheetsPerSignature)}
+                onChange={(e) =>
+                  onImposition?.({ ...imposition, sheetsPerSignature: Number(e.target.value) })
+                }
+              >
+                {SHEETS_PER_SIGNATURE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="duplex-flip">Duplex flip</label>
+              <select
+                id="duplex-flip"
+                value={imposition.flip}
+                onChange={(e) =>
+                  onImposition?.({
+                    ...imposition,
+                    flip: e.target.value as ImpositionOptions["flip"],
+                  })
+                }
+              >
+                <option value="long-edge">{FLIP_LABELS["long-edge"]}</option>
+                <option value="short-edge">{FLIP_LABELS["short-edge"]}</option>
+              </select>
+            </div>
+          </fieldset>
+        </details>
       </div>
 
       <fieldset className="panel__group">

@@ -5,6 +5,10 @@ import type { DesignSpec, Page, PaginationResult } from "../engine/types";
 import { EngineClient, type EngineClientLike, type PaginateHandlers } from "../engine/client";
 import { statsForResult, type BudgetBounds, type PassStats, type SolveOutcome } from "../engine/budget";
 import { entryForStack } from "../fonts/catalog";
+import { ExportClient, type ExportClientLike } from "../export/client";
+import type { ImpositionOptions } from "../export/impose";
+import type { DocMeta, ExportPhase } from "../export/protocol";
+import { filenameSlug, pdfObjectUrl, triggerDownload } from "../export/download";
 import { affectsPagination } from "./design/designPatch";
 import { pagePlacement } from "./pageGeometry";
 import { groupSpreads, type ViewMode } from "./spreads";
@@ -51,6 +55,26 @@ export interface BudgetRequest {
   seq: number;
 }
 
+/** One committed Export click; a bumped `seq` requests a fresh export. */
+export interface ExportRequest {
+  seq: number;
+  imposition: ImpositionOptions;
+}
+
+/** A saved file the user can re-download from the status area. */
+export interface ExportDownload {
+  url: string;
+  filename: string;
+  label: string;
+}
+
+/** What the studio shows for the Export button and status line. */
+export type ExportUiState =
+  | { kind: "idle" }
+  | { kind: "running"; phase: ExportPhase; done: number; total: number }
+  | { kind: "done"; downloads: ExportDownload[] }
+  | { kind: "error" };
+
 /** What the latest settled pass (paginate or solve) laid out. */
 export interface SettledPass {
   design: DesignSpec;
@@ -68,8 +92,14 @@ interface Props {
   onSolveOutcome?: (outcome: SolveOutcome) => void;
   /** Fired on every settled pass, paginate or solve. */
   onSettled?: (settled: SettledPass) => void;
+  /** The pending Export request, or null when no export is asked for. */
+  exportRequest?: ExportRequest | null;
+  /** Fired as the export progresses, completes, or fails. */
+  onExportState?: (state: ExportUiState) => void;
   /** Injectable for tests; defaults to a real worker-backed client. */
   createEngine?: () => EngineClientLike | null;
+  /** Injectable for tests; defaults to a real export worker client. */
+  createExport?: () => ExportClientLike | null;
 }
 
 function defaultCreateEngine(): EngineClientLike | null {
@@ -81,6 +111,29 @@ function defaultCreateEngine(): EngineClientLike | null {
   }
 }
 
+function defaultCreateExport(): ExportClientLike | null {
+  if (typeof Worker === "undefined") return null;
+  try {
+    return new ExportClient();
+  } catch {
+    return null;
+  }
+}
+
+/** Revoke a Blob object URL where the browser supports it (jsdom does not). */
+function revokeObjectUrl(url: string): void {
+  if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** The few book-data strings the PDF's running heads need. No body text. */
+function buildDocMeta(doc: Document): DocMeta {
+  const chapterTitles: Record<number, string> = {};
+  for (const chapter of doc.chapters) chapterTitles[chapter.order] = chapter.title;
+  return { title: doc.title, author: doc.author, chapterTitles };
+}
+
 export function BookPreview({
   document,
   design,
@@ -88,13 +141,21 @@ export function BookPreview({
   budget = null,
   onSolveOutcome,
   onSettled,
+  exportRequest = null,
+  onExportState,
   createEngine = defaultCreateEngine,
+  createExport = defaultCreateExport,
 }: Props) {
   const [state, setState] = useState<PreviewState>({ status: "laying-out" });
   const [scrollTop, setScrollTop] = useState(0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const createRef = useRef(createEngine);
   const engineRef = useRef<EngineClientLike | null>(null);
+  const createExportRef = useRef(createExport);
+  const exportClientRef = useRef<ExportClientLike | null>(null);
+  // Object URLs held for the visible download links; revoked on the next export
+  // and on unmount so a run never leaks blobs.
+  const downloadUrlsRef = useRef<string[]>([]);
   const rafRef = useRef<number | null>(null);
   // The design of the currently mounted (or in-flight) result. `null` until the
   // first pass starts, which lets the design-change effect skip the initial
@@ -132,6 +193,8 @@ export function BookPreview({
   onSolveOutcomeRef.current = onSolveOutcome;
   const onSettledRef = useRef(onSettled);
   onSettledRef.current = onSettled;
+  const onExportStateRef = useRef(onExportState);
+  onExportStateRef.current = onExportState;
 
   // One handler set for paginate and solve, so a solve's result flows through
   // the exact same progress/done path: mounted book kept during the pass,
@@ -251,6 +314,62 @@ export function BookPreview({
     // `budget` changes identity only when seq bumps; handlersFor is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [budgetSeq, handlersFor]);
+
+  // A committed Export click: build both PDFs in the export worker from the
+  // settled result read-only, stream progress to the studio, and save both
+  // files on done. Keyed on the request's seq so a later click supersedes an
+  // in-flight export (latest-wins in the client). Export never mutates preview
+  // state, never re-paginates, and never blanks the mounted book.
+  const exportSeq = exportRequest?.seq;
+  const exportImposition = exportRequest?.imposition;
+  useEffect(() => {
+    if (exportSeq == null || exportImposition == null) return;
+    if (state.status !== "ready") return;
+    let client = exportClientRef.current;
+    if (!client) {
+      client = createExportRef.current();
+      exportClientRef.current = client;
+    }
+    if (!client) return;
+
+    const { result, design: appliedDesign } = state;
+    const docMeta = buildDocMeta(document);
+    onExportStateRef.current?.({ kind: "running", phase: "typeset", done: 0, total: result.pageCount });
+
+    client.export(
+      { result, design: appliedDesign, docMeta, imposition: exportImposition },
+      {
+        onProgress: (phase, done, total) =>
+          onExportStateRef.current?.({ kind: "running", phase, done, total }),
+        onDone: (typeset, signatures) => {
+          for (const url of downloadUrlsRef.current) revokeObjectUrl(url);
+          const slug = document.title;
+          const files: ExportDownload[] = [
+            { url: pdfObjectUrl(typeset), filename: filenameSlug(slug, "typeset"), label: "Save typeset PDF" },
+            { url: pdfObjectUrl(signatures), filename: filenameSlug(slug, "signatures"), label: "Save signatures PDF" },
+          ];
+          downloadUrlsRef.current = files.map((f) => f.url);
+          // A short tick between saves so the browser does not suppress the second.
+          files.forEach((f, i) => setTimeout(() => triggerDownload(f.url, f.filename), i * 150));
+          onExportStateRef.current?.({ kind: "done", downloads: files });
+        },
+        onError: () => onExportStateRef.current?.({ kind: "error" }),
+      },
+    );
+    // Only the request's seq drives a fresh export; state is read at click time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exportSeq]);
+
+  // Dispose the export worker and revoke any held URLs on unmount.
+  useEffect(
+    () => () => {
+      exportClientRef.current?.dispose();
+      exportClientRef.current = null;
+      for (const url of downloadUrlsRef.current) revokeObjectUrl(url);
+      downloadUrlsRef.current = [];
+    },
+    [],
+  );
 
   const onScroll = useCallback(() => {
     if (rafRef.current != null) return;

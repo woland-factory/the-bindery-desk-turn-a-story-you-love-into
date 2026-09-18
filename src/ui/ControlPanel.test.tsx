@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ControlPanel } from "./ControlPanel";
 import { DEFAULT_DESIGN } from "../engine/defaultDesign";
 import type { DesignSpec } from "../engine/types";
+import type { ExportUiState } from "./BookPreview";
 
 function setup(overrides: Partial<Parameters<typeof ControlPanel>[0]> = {}) {
   const onChange = vi.fn<(d: DesignSpec) => void>();
@@ -85,10 +86,119 @@ describe("ControlPanel dials emit the right patch", () => {
 });
 
 describe("ControlPanel actions and a11y", () => {
-  it("renders one disabled primary Export slot", () => {
-    setup();
-    const exportBtn = screen.getByRole("button", { name: "Export" });
-    expect(exportBtn).toBeDisabled();
+  it("disables Export before the first settled page and enables it after", () => {
+    const { rerender } = render(
+      <ControlPanel design={DEFAULT_DESIGN} onChange={() => {}} onReset={() => {}} canExport={false} />,
+    );
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    rerender(
+      <ControlPanel design={DEFAULT_DESIGN} onChange={() => {}} onReset={() => {}} canExport={true} />,
+    );
+    expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+  });
+
+  it("fires the export callback once on click", () => {
+    const onExport = vi.fn();
+    render(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        onExport={onExport}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(onExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a phase-and-page progress label and marks the button busy while running", () => {
+    render(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        exportState={{ kind: "running", phase: "typeset", done: 240, total: 903 }}
+      />,
+    );
+    const btn = screen.getByRole("button", { name: "Typesetting page 240 of 903" });
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("aria-busy", "true");
+  });
+
+  it("names the impose phase and confirms completion with save links", () => {
+    const { rerender } = render(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        exportState={{ kind: "running", phase: "impose", done: 4, total: 8 }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Building signatures" })).toBeInTheDocument();
+
+    rerender(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        exportState={{
+          kind: "done",
+          downloads: [
+            { url: "blob:a", filename: "book-typeset.pdf", label: "Save typeset PDF" },
+            { url: "blob:b", filename: "book-signatures.pdf", label: "Save signatures PDF" },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("Saved two files.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Save typeset PDF" })).toHaveAttribute(
+      "download",
+      "book-typeset.pdf",
+    );
+    expect(screen.getByRole("link", { name: "Save signatures PDF" })).toBeInTheDocument();
+  });
+
+  it("shows the error state with a next step", () => {
+    render(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        exportState={{ kind: "error" }}
+      />,
+    );
+    expect(
+      screen.getByText("The export stopped before it finished. Try again."),
+    ).toBeInTheDocument();
+    // The button returns to its idle label, ready to retry.
+    expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+  });
+
+  it("defaults print setup to 4 sheets and Long edge, and fires change callbacks", () => {
+    const onImposition = vi.fn();
+    render(
+      <ControlPanel
+        design={DEFAULT_DESIGN}
+        onChange={() => {}}
+        onReset={() => {}}
+        canExport
+        onImposition={onImposition}
+      />,
+    );
+    const sheets = screen.getByLabelText("Sheets per signature") as HTMLSelectElement;
+    const flip = screen.getByLabelText("Duplex flip") as HTMLSelectElement;
+    expect(sheets.value).toBe("4");
+    expect(flip.value).toBe("long-edge");
+
+    fireEvent.change(sheets, { target: { value: "2" } });
+    expect(onImposition).toHaveBeenLastCalledWith({ sheetsPerSignature: 2, flip: "long-edge" });
+    fireEvent.change(flip, { target: { value: "short-edge" } });
+    expect(onImposition).toHaveBeenLastCalledWith({ sheetsPerSignature: 4, flip: "short-edge" });
   });
 
   it("resets to defaults through the secondary action", () => {
@@ -122,13 +232,38 @@ describe("ControlPanel actions and a11y", () => {
 });
 
 describe("ControlPanel copy is swept", () => {
-  it("uses no em-dashes, banned vocabulary, or negative phrasing", () => {
-    const { container } = render(
-      <ControlPanel design={DEFAULT_DESIGN} onChange={() => {}} onReset={() => {}} />,
-    );
-    const text = container.textContent ?? "";
-    expect(text).not.toMatch(/[—–]/);
-    expect(text).not.toMatch(/seamless|effortless|unlock|elevate|empower|leverage|robust|dive in/i);
-    expect(text).not.toMatch(/You don't have|No .* yet|Nothing .* here|Unable to|Something went wrong/i);
+  const states: ExportUiState[] = [
+    { kind: "idle" },
+    { kind: "running", phase: "typeset", done: 12, total: 40 },
+    { kind: "running", phase: "impose", done: 2, total: 8 },
+    {
+      kind: "done",
+      downloads: [
+        { url: "blob:a", filename: "book-typeset.pdf", label: "Save typeset PDF" },
+        { url: "blob:b", filename: "book-signatures.pdf", label: "Save signatures PDF" },
+      ],
+    },
+    { kind: "error" },
+  ];
+
+  it("uses no em-dashes, banned vocabulary, or negative phrasing across every export state", () => {
+    for (const exportState of states) {
+      const { container, unmount } = render(
+        <ControlPanel
+          design={DEFAULT_DESIGN}
+          onChange={() => {}}
+          onReset={() => {}}
+          canExport
+          exportState={exportState}
+        />,
+      );
+      const text = container.textContent ?? "";
+      expect(text).not.toMatch(/[—–]/);
+      expect(text).not.toMatch(/seamless|effortless|unlock|elevate|empower|leverage|robust|dive in/i);
+      expect(text).not.toMatch(
+        /You don't have|No .* yet|Nothing .* here|Unable to|Something went wrong/i,
+      );
+      unmount();
+    }
   });
 });

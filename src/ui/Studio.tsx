@@ -13,11 +13,18 @@ import {
 } from "../engine/budget";
 import { warmCatalog } from "../fonts/loadFonts";
 import { ControlPanel } from "./ControlPanel";
-import { BookPreview, type BudgetRequest, type SettledPass } from "./BookPreview";
+import {
+  BookPreview,
+  type BudgetRequest,
+  type ExportUiState,
+  type SettledPass,
+} from "./BookPreview";
 import { StructureView } from "./StructureView";
 import { loadDesign, saveDesign } from "./design/persistDesign";
 import { BudgetSlider, type Readout } from "./budget/BudgetSlider";
 import { loadBounds, saveBounds } from "./budget/persistBudget";
+import type { ImpositionOptions } from "../export/impose";
+import { loadImposition, saveImposition } from "../export/persistPrint";
 
 // The studio owns the working design: it restores the persisted design on
 // mount, feeds it live to the preview, persists every change (debounced), and
@@ -50,6 +57,10 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
   const [solving, setSolving] = useState(false);
   // The thumb's live value while a drag's solve is still in flight.
   const [target, setTarget] = useState<number | null>(null);
+  // Print setup drives imposition only; it never touches the design or solves.
+  const [imposition, setImposition] = useState<ImpositionOptions>(() => loadImposition());
+  const [exportSeq, setExportSeq] = useState(0);
+  const [exportState, setExportState] = useState<ExportUiState>({ kind: "idle" });
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seqRef = useRef(0);
 
@@ -121,6 +132,21 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
     // Bounds never touch the design or trigger a solve by themselves.
     setBounds(next);
     saveBounds(next);
+  }, []);
+
+  const onExport = useCallback(() => {
+    // A fresh seq drives one export; the preview reads the settled result.
+    setExportSeq((seq) => seq + 1);
+  }, []);
+
+  const onExportState = useCallback((next: ExportUiState) => {
+    setExportState(next);
+  }, []);
+
+  const onImposition = useCallback((next: ImpositionOptions) => {
+    // Print setup edits change the imposition only. No design change, no solve.
+    setImposition(next);
+    saveImposition(next);
   }, []);
 
   const warmFonts = useCallback(() => {
@@ -199,6 +225,11 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
             onChange={onChange}
             onReset={onResetDesign}
             onFontFocus={warmFonts}
+            canExport={settled != null}
+            exportState={exportState}
+            onExport={onExport}
+            imposition={imposition}
+            onImposition={onImposition}
           />
         </div>
         <BookPreview
@@ -208,6 +239,8 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
           budget={budgetRequest}
           onSolveOutcome={onSolveOutcome}
           onSettled={onSettled}
+          exportRequest={exportSeq > 0 ? { seq: exportSeq, imposition } : null}
+          onExportState={onExportState}
           createEngine={createEngine}
         />
       </div>

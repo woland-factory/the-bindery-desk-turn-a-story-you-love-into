@@ -19,6 +19,9 @@ export const DEFAULT_IMPOSITION: ImpositionOptions = {
   flip: "long-edge",
 };
 
+/** Whole-sheet options offered in the print-setup control. */
+export const SHEETS_PER_SIGNATURE_OPTIONS = [1, 2, 4, 6, 8] as const;
+
 /** One half of a printed sheet side. `source` is a 1-based typeset page. */
 export interface PlacedPage {
   /** 1-based page within `paddedPageCount`; null is an intentional blank. */

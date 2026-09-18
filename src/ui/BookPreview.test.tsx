@@ -1,12 +1,42 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, render, screen, fireEvent, within } from "@testing-library/react";
-import { BookPreview } from "./BookPreview";
+import { BookPreview, type ExportUiState } from "./BookPreview";
 import type { EngineClientLike, PaginateHandlers, SolveRequest } from "../engine/client";
+import type { ExportClientLike, ExportHandlers, ExportInput } from "../export/client";
+import { DEFAULT_IMPOSITION } from "../export/impose";
 import type { Document } from "../model/document";
 import type { DesignSpec, Page, PageKind, PageSide, PaginationResult, Timings } from "../engine/types";
 import { DEFAULT_DESIGN } from "../engine/defaultDesign";
 import { DEFAULT_BOUNDS, type PassStats, type SolveOutcome } from "../engine/budget";
 import { applyFontSize, applyHeader } from "./design/designPatch";
+
+vi.mock("../export/download", () => ({
+  filenameSlug: (title: string, suffix: string) => `${title || "book"}-${suffix}.pdf`,
+  pdfObjectUrl: () => "blob:mock",
+  triggerDownload: vi.fn(),
+}));
+import { triggerDownload } from "../export/download";
+
+function fakeExport() {
+  let handlers: ExportHandlers | null = null;
+  const inputs: ExportInput[] = [];
+  const client: ExportClientLike = {
+    export: (input, h) => {
+      inputs.push(input);
+      handlers = h;
+    },
+    dispose: vi.fn(),
+  };
+  return {
+    create: () => client,
+    inputs,
+    dispose: client.dispose,
+    progress: (phase: "typeset" | "impose", done: number, total: number) =>
+      act(() => handlers?.onProgress?.(phase, done, total)),
+    done: () => act(() => handlers?.onDone?.(new ArrayBuffer(8), new ArrayBuffer(4))),
+    error: () => act(() => handlers?.onError?.("stopped")),
+  };
+}
 
 const document: Document = {
   title: "Windermere",
@@ -323,6 +353,149 @@ describe("BookPreview paper-budget solve", () => {
     await settleReflow();
     expect(f.paginateCalls).toBe(paginatesBefore);
     expect(f.solveRequests).toHaveLength(1);
+  });
+});
+
+describe("BookPreview export", () => {
+  const exportReq = (seq: number) => ({ seq, imposition: DEFAULT_IMPOSITION });
+
+  function settle(f: ReturnType<typeof fakeEngine>) {
+    f.done({ pageCount: 8, pages: Array.from({ length: 8 }, (_, i) => page(i, ["a line"])) });
+  }
+
+  it("calls the export client once with the settled result, design, and imposition", async () => {
+    const f = fakeEngine();
+    const x = fakeExport();
+    const { rerender } = render(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    settle(f);
+    const paginatesBefore = f.paginateCalls;
+
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        exportRequest={exportReq(1)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+
+    expect(x.inputs).toHaveLength(1);
+    expect(x.inputs[0].result.pageCount).toBe(8);
+    expect(x.inputs[0].design).toEqual(DEFAULT_DESIGN);
+    expect(x.inputs[0].imposition).toEqual(DEFAULT_IMPOSITION);
+    // Export never re-paginates and never blanks the mounted book.
+    expect(f.paginateCalls).toBe(paginatesBefore);
+    expect(screen.getAllByTestId("page-leaf").length).toBeGreaterThan(0);
+  });
+
+  it("forwards progress and, on done, saves both files and reports done", async () => {
+    const f = fakeEngine();
+    const x = fakeExport();
+    const states: ExportUiState[] = [];
+    const { rerender } = render(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        onExportState={(s) => states.push(s)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    settle(f);
+    vi.mocked(triggerDownload).mockClear();
+
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        exportRequest={exportReq(1)}
+        onExportState={(s) => states.push(s)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    x.progress("typeset", 4, 8);
+    x.progress("impose", 1, 4);
+    await act(async () => {
+      x.done();
+      // Let the staggered download timers fire.
+      await new Promise((r) => setTimeout(r, 400));
+    });
+
+    expect(states.some((s) => s.kind === "running" && s.phase === "typeset")).toBe(true);
+    expect(states.some((s) => s.kind === "running" && s.phase === "impose")).toBe(true);
+    const doneState = states.find((s) => s.kind === "done");
+    expect(doneState).toBeDefined();
+    expect(triggerDownload).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the error state when the export fails", () => {
+    const f = fakeEngine();
+    const x = fakeExport();
+    const states: ExportUiState[] = [];
+    const { rerender } = render(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        onExportState={(s) => states.push(s)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    settle(f);
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        exportRequest={exportReq(1)}
+        onExportState={(s) => states.push(s)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    x.error();
+    expect(states.at(-1)).toEqual({ kind: "error" });
+  });
+
+  it("disposes the export client on unmount", () => {
+    const f = fakeEngine();
+    const x = fakeExport();
+    const { rerender, unmount } = render(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    settle(f);
+    rerender(
+      <BookPreview
+        document={document}
+        design={DEFAULT_DESIGN}
+        onReset={() => {}}
+        exportRequest={exportReq(1)}
+        createEngine={f.create}
+        createExport={x.create}
+      />,
+    );
+    unmount();
+    expect(x.dispose).toHaveBeenCalled();
   });
 });
 

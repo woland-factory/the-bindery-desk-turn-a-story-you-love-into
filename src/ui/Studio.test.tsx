@@ -249,3 +249,23 @@ describe("Studio paper budget", () => {
     expect(screen.getByText("1 sheet · 1 signature of 4 sheets")).toBeInTheDocument();
   });
 });
+
+describe("Studio export and print setup", () => {
+  it("enables Export after the first settle and does not export on a print-setup change", async () => {
+    const { f } = renderBudgetStudio();
+    // Before a settle, Export is disabled.
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    settleBig(f);
+    expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
+
+    // A print-setup edit persists imposition and never triggers a solve/paginate.
+    const paginatesBefore = f.paginated.length;
+    fireEvent.change(screen.getByLabelText("Sheets per signature"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Duplex flip"), { target: { value: "short-edge" } });
+    await wait(25);
+    expect(f.solveRequests).toHaveLength(0);
+    expect(f.paginated.length).toBe(paginatesBefore);
+    const stored = JSON.parse(localStorage.getItem("bindery.print") ?? "{}");
+    expect(stored.imposition).toEqual({ sheetsPerSignature: 2, flip: "short-edge" });
+  });
+});
