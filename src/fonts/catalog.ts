@@ -15,6 +15,17 @@ export interface FontWeights {
   bold: string;
 }
 
+/**
+ * TTF URLs the export worker embeds (subset) into the PDF. The on-screen woff2
+ * subsetting path is unreliable, so export embeds a TTF of the same upstream
+ * release, fetched only when an export runs. These files live under
+ * public/fonts/embed/ and never load on the initial bundle.
+ */
+export interface FontEmbed {
+  regular: string;
+  bold: string;
+}
+
 export interface FontEntry {
   /** Stable id used for caching and warm requests. */
   id: string;
@@ -28,6 +39,8 @@ export interface FontEntry {
   embeddable: boolean;
   /** woff2 URLs; absent for the system serif. */
   weights?: FontWeights;
+  /** TTF URLs for PDF embedding; absent for the system serif. */
+  embed?: FontEmbed;
   /** Short license tag for provenance. */
   license?: string;
 }
@@ -53,6 +66,10 @@ export const FONT_CATALOG: FontEntry[] = [
       regular: "/fonts/eb-garamond-400.woff2",
       bold: "/fonts/eb-garamond-700.woff2",
     },
+    embed: {
+      regular: "/fonts/embed/eb-garamond-400.ttf",
+      bold: "/fonts/embed/eb-garamond-700.ttf",
+    },
     license: "OFL-1.1",
   },
   {
@@ -64,6 +81,10 @@ export const FONT_CATALOG: FontEntry[] = [
     weights: {
       regular: "/fonts/libre-baskerville-400.woff2",
       bold: "/fonts/libre-baskerville-700.woff2",
+    },
+    embed: {
+      regular: "/fonts/embed/libre-baskerville-400.ttf",
+      bold: "/fonts/embed/libre-baskerville-700.ttf",
     },
     license: "OFL-1.1",
   },
@@ -77,6 +98,10 @@ export const FONT_CATALOG: FontEntry[] = [
       regular: "/fonts/lora-400.woff2",
       bold: "/fonts/lora-700.woff2",
     },
+    embed: {
+      regular: "/fonts/embed/lora-400.ttf",
+      bold: "/fonts/embed/lora-700.ttf",
+    },
     license: "OFL-1.1",
   },
   {
@@ -88,6 +113,10 @@ export const FONT_CATALOG: FontEntry[] = [
     weights: {
       regular: "/fonts/source-serif-4-400.woff2",
       bold: "/fonts/source-serif-4-700.woff2",
+    },
+    embed: {
+      regular: "/fonts/embed/source-serif-4-400.ttf",
+      bold: "/fonts/embed/source-serif-4-700.ttf",
     },
     license: "OFL-1.1",
   },
