@@ -21,7 +21,12 @@ worker, so even a 300,000-word novel settles in about a second and a half,
 first feedback lands well under a tenth of a second, and the preview keeps
 the last book on screen while the new one arrives, so it never blinks. Your
 dials and bounds are saved in this browser and come back when you reopen the
-book. PDF export and the folded imposition layout arrive in later milestones.
+book. One Export click then saves two PDFs: a typeset book that matches the
+preview page for page with the font embedded, and a printer-ready signature
+PDF whose sheets fold into reading order. Both build in a background worker,
+so even a 300,000-word novel exports without freezing the studio, and a
+Print setup panel sets sheets per signature and the duplex flip your printer
+uses. Nothing is uploaded; both files are built from bytes already in the tab.
 
 ## Your file stays on your computer
 
@@ -114,13 +119,15 @@ src/
   ui/            import states, the studio (control panel + facing-page preview), structure view
   ui/design/     pure design logic: trim presets, setters, session persistence
   ui/budget/     the paper-budget slider, readout, bounds, and their persistence
+  export/        the dual-PDF exporter: geometry, imposition math, PDF builders, worker, client, download
   integrations/  Sentry and Umami, both runtime-gated and privacy-safe
   config/        runtime config read from window.__BINDERY_CONFIG__
   sample/        one-tap loader for the bundled sample book
 public/sample/   the bundled public-domain sample EPUB
 public/fonts/    the curated woff2 book faces, their license, and provenance
+public/fonts/embed/  TTF faces the exporter subsets and embeds, loaded only on export
 docker/          nginx config and the startup script that generates /config.js
-e2e/             Playwright specs: import, pagination, preview, typography, budget
+e2e/             Playwright specs: import, pagination, preview, typography, budget, export
 ```
 
 The dials write a plain `DesignSpec`; every change re-paginates in the worker
@@ -149,6 +156,11 @@ Baskerville**, **Lora**, and **Source Serif 4**. All four are licensed under the
 SIL Open Font License 1.1 (`public/fonts/OFL.txt`), with sources and versions in
 `public/fonts/PROVENANCE.md`. They are same-origin app assets, so selecting one
 does not send your book anywhere, and they work offline after first load.
+
+For export, the same four faces ship as TTFs in `public/fonts/embed/`, loaded
+only when you export and subset into the PDF so the file renders on a machine
+that lacks the font. The system serif has no bundled file, so exporting it
+embeds Lora in its place, recorded in `public/fonts/PROVENANCE.md`.
 
 ## License
 
