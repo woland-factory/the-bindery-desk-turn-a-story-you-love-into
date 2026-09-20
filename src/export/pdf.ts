@@ -48,6 +48,7 @@ export async function buildTypeset(
 
     // Body text and chapter openings both carry their lines in `page.lines`;
     // the engine has already baked any opener top drop into each `line.y`.
+    let drew = false;
     for (const line of page.lines) {
       const text = displayLineText(line);
       if (!text) continue;
@@ -58,11 +59,20 @@ export async function buildTypeset(
         size: box.fontSizePt,
         font,
       });
+      drew = true;
     }
 
     // Chrome (running head + folio) only on body pages, matching PageView.
     if (page.kind === "body") {
       drawChrome(pdfPage, page, design, docMeta, box, font, ascentRatio);
+      drew = true;
+    }
+
+    // A page that drew nothing (a blank leaf) still needs a content stream, or
+    // embedPages in buildSignatures rejects it ("missing Contents"). A zero-size
+    // rectangle emits an empty stream and paints nothing.
+    if (!drew) {
+      pdfPage.drawRectangle({ x: 0, y: 0, width: 0, height: 0 });
     }
 
     if ((i + 1) % PROGRESS_EVERY === 0 || i + 1 === total) onProgress?.(i + 1, total);

@@ -105,6 +105,23 @@ describe("buildSignatures", () => {
     expect(plan.paddedPageCount).toBe(8);
   });
 
+  it("embeds blank pages (no drawn content) into the signature file", async () => {
+    // A real book has blank leaves (chapters opening recto). Each must still
+    // carry a content stream, or embedPages rejects it with "missing Contents".
+    const pages: Page[] = [
+      page(0, ["First page"], "opener"),
+      page(1, [], "blank"),
+      page(2, ["Body text"], "body"),
+      page(3, [], "blank"),
+    ];
+    const r: PaginationResult = { pageCount: pages.length, pages };
+    const typeset = await buildTypeset(r, DEFAULT_DESIGN, docMeta, fontBytes);
+    const plan = imposeBook(r.pageCount, DEFAULT_IMPOSITION);
+    const sigDoc = await buildSignatures(typeset, plan, DEFAULT_DESIGN);
+    const reloaded = await PDFDocument.load(await sigDoc.save());
+    expect(reloaded.getPageCount()).toBe(plan.sides.length);
+  });
+
   it("builds from a single-page (padded) result without throwing", async () => {
     const r = result(1);
     const typeset = await buildTypeset(r, DEFAULT_DESIGN, docMeta, fontBytes);
