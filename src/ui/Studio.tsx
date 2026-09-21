@@ -25,6 +25,10 @@ import { BudgetSlider, type Readout } from "./budget/BudgetSlider";
 import { loadBounds, saveBounds } from "./budget/persistBudget";
 import type { ImpositionOptions } from "../export/impose";
 import { loadImposition, saveImposition } from "../export/persistPrint";
+import type { ExportClientLike } from "../export/client";
+import { ProjectControls } from "./ProjectControls";
+import { buildHouseStyle, buildProject, readSettingsFile, type SourceRef } from "../project/projectFile";
+import { saveHouseStyle, saveProject } from "../project/projectIo";
 
 // The studio owns the working design: it restores the persisted design on
 // mount, feeds it live to the preview, persists every change (debounced), and
@@ -40,11 +44,22 @@ interface Props {
   onReset: () => void;
   /** Injectable for tests; forwarded to the preview. */
   createEngine?: () => EngineClientLike | null;
+  /** Injectable for tests; forwarded to the preview's export client. */
+  createExport?: () => ExportClientLike | null;
+  /** Fired once when the first export of this session completes. */
+  onExportDone?: () => void;
 }
 
 const SAVE_DEBOUNCE_MS = 250;
 
-export function Studio({ document, report, onReset, createEngine }: Props) {
+export function Studio({
+  document,
+  report,
+  onReset,
+  createEngine,
+  createExport,
+  onExportDone,
+}: Props) {
   const [design, setDesign] = useState<DesignSpec>(() => loadDesign());
   const [bounds, setBounds] = useState(() => loadBounds());
   // The design as of the last manual change (dial edit, Reset, initial load).
@@ -61,6 +76,8 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
   const [imposition, setImposition] = useState<ImpositionOptions>(() => loadImposition());
   const [exportSeq, setExportSeq] = useState(0);
   const [exportState, setExportState] = useState<ExportUiState>({ kind: "idle" });
+  // The current project/preset save or open result, in the product's voice.
+  const [notice, setNotice] = useState("");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seqRef = useRef(0);
 
@@ -149,6 +166,81 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
     saveImposition(next);
   }, []);
 
+  // Apply an opened project or house style: set and persist the three settings
+  // so a later reload keeps them, anchor future solves to the restored design,
+  // and clear any stale solve readout. Setting `design` drives the existing
+  // live re-flow; no second layout path is added, and the book is never
+  // re-parsed or blanked.
+  const applySettings = useCallback(
+    (loaded: { design: DesignSpec; bounds: BudgetBounds; imposition: ImpositionOptions }) => {
+      // Cancel any pending debounced save so it cannot overwrite the applied
+      // design a moment later.
+      if (saveTimer.current != null) clearTimeout(saveTimer.current);
+      setDesign(loaded.design);
+      saveDesign(loaded.design);
+      setBounds(loaded.bounds);
+      saveBounds(loaded.bounds);
+      setImposition(loaded.imposition);
+      saveImposition(loaded.imposition);
+      setBudgetBase(loaded.design);
+      clearSolveDisplay();
+    },
+    [clearSolveDisplay],
+  );
+
+  const onSaveProject = useCallback(() => {
+    const source: SourceRef = {
+      name: document.source.name,
+      byteLength: document.source.byteLength,
+      sha256: document.source.sha256,
+    };
+    saveProject(buildProject(source, design, bounds, imposition), document.title);
+    setNotice("Saved your project.");
+  }, [document, design, bounds, imposition]);
+
+  const onSaveHouseStyle = useCallback(() => {
+    saveHouseStyle(buildHouseStyle(design, bounds, imposition), document.title);
+    setNotice("Saved your house style.");
+  }, [document, design, bounds, imposition]);
+
+  const onOpenFile = useCallback(
+    (text: string) => {
+      const loaded = readSettingsFile(text);
+      if (!loaded.ok) {
+        setNotice("This file did not load. Choose a project or house style saved here.");
+        return;
+      }
+      applySettings(loaded);
+      if (loaded.origin === "housestyle") {
+        setNotice("House style applied.");
+        return;
+      }
+      const theirs = loaded.source?.sha256;
+      const ours = document.source.sha256;
+      if (theirs && ours && theirs !== ours) {
+        setNotice("Settings applied. This project came from a different book.");
+      } else {
+        setNotice("Project loaded.");
+      }
+    },
+    [applySettings, document],
+  );
+
+  // Signal the guided first run once, when the first export completes.
+  const onExportDoneRef = useRef(onExportDone);
+  onExportDoneRef.current = onExportDone;
+  const exportDoneFiredRef = useRef(false);
+  useEffect(() => {
+    if (exportState.kind === "done") {
+      if (!exportDoneFiredRef.current) {
+        exportDoneFiredRef.current = true;
+        onExportDoneRef.current?.();
+      }
+    } else {
+      exportDoneFiredRef.current = false;
+    }
+  }, [exportState]);
+
   const warmFonts = useCallback(() => {
     void warmCatalog();
   }, []);
@@ -231,6 +323,12 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
             imposition={imposition}
             onImposition={onImposition}
           />
+          <ProjectControls
+            onSaveProject={onSaveProject}
+            onSaveHouseStyle={onSaveHouseStyle}
+            onOpenFile={onOpenFile}
+            notice={notice}
+          />
         </div>
         <BookPreview
           document={document}
@@ -242,6 +340,7 @@ export function Studio({ document, report, onReset, createEngine }: Props) {
           exportRequest={exportSeq > 0 ? { seq: exportSeq, imposition } : null}
           onExportState={onExportState}
           createEngine={createEngine}
+          createExport={createExport}
         />
       </div>
       <StructureView document={document} report={report} onReset={onReset} />

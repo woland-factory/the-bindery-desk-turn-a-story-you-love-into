@@ -13,6 +13,17 @@ import { applyFontSize } from "./design/designPatch";
 vi.mock("../fonts/loadFonts", () => ({ warmCatalog: vi.fn(() => Promise.resolve()) }));
 import { warmCatalog } from "../fonts/loadFonts";
 
+const { saveProject, saveHouseStyle } = vi.hoisted(() => ({
+  saveProject: vi.fn(),
+  saveHouseStyle: vi.fn(),
+}));
+vi.mock("../project/projectIo", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../project/projectIo")>();
+  return { ...actual, saveProject, saveHouseStyle };
+});
+import { buildHouseStyle, buildProject, type SourceRef } from "../project/projectFile";
+import { DEFAULT_IMPOSITION } from "../export/impose";
+
 const document: Document = {
   title: "Windermere",
   author: "A. Author",
@@ -86,6 +97,8 @@ function renderBudgetStudio() {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(warmCatalog).mockClear();
+  saveProject.mockClear();
+  saveHouseStyle.mockClear();
 });
 
 describe("Studio", () => {
@@ -247,6 +260,158 @@ describe("Studio paper budget", () => {
     expect(slider).toBeDisabled();
     // The readout still reports the real book.
     expect(screen.getByText("1 sheet · 1 signature of 4 sheets")).toBeInTheDocument();
+  });
+});
+
+describe("Studio project and presets", () => {
+  const source: SourceRef = { name: "book", sha256: "hash-a", byteLength: 0 };
+
+  function openFile(view: ReturnType<typeof render>, text: string, label: string) {
+    const input = view.container.querySelector(
+      `input[aria-label="${label}"]`,
+    ) as HTMLInputElement;
+    return act(async () => {
+      fireEvent.change(input, {
+        target: { files: [new File([text], "f.json", { type: "application/json" })] },
+      });
+      // Let the async file read and the resulting apply flush.
+      await new Promise((r) => setTimeout(r, 20));
+    });
+  }
+
+  it("renders four project actions subordinate to the primary Export button", () => {
+    renderStudio();
+    expect(screen.getByRole("button", { name: "Export" })).toHaveClass("btn--primary");
+    for (const name of ["Save project", "Open project", "Save house style", "Apply house style"]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("btn--ghost");
+    }
+  });
+
+  it("saves a project built from the current book and settings", async () => {
+    const { f } = renderBudgetStudio();
+    settleBig(f);
+    fireEvent.click(screen.getByRole("button", { name: "Save project" }));
+    expect(saveProject).toHaveBeenCalledTimes(1);
+    const [file, title] = saveProject.mock.calls[0];
+    expect(file.kind).toBe("bindery-project");
+    expect(file.source).toEqual({ name: "book", byteLength: 0 });
+    expect(file.design.font.sizePt).toBe(DEFAULT_DESIGN.font.sizePt);
+    expect(title).toBe("Windermere");
+    expect(screen.getByText("Saved your project.")).toBeInTheDocument();
+  });
+
+  it("saves a house style with no source", () => {
+    renderStudio();
+    fireEvent.click(screen.getByRole("button", { name: "Save house style" }));
+    expect(saveHouseStyle).toHaveBeenCalledTimes(1);
+    const [file] = saveHouseStyle.mock.calls[0];
+    expect(file.kind).toBe("bindery-housestyle");
+    expect("source" in file).toBe(false);
+    expect(screen.getByText("Saved your house style.")).toBeInTheDocument();
+  });
+
+  it("opens a project, applies and persists its settings, and re-paginates", async () => {
+    const { f, view } = renderBudgetStudio();
+    settleBig(f);
+    const paginatesBefore = f.paginated.length;
+
+    const project = buildProject(
+      source,
+      applyFontSize(DEFAULT_DESIGN, 13),
+      { ...DEFAULT_BOUNDS, fontMaxPt: 16 },
+      { sheetsPerSignature: 2, flip: "short-edge" },
+    );
+    await openFile(view, JSON.stringify(project), "Open project file");
+    await wait(25); // the re-flow debounce
+
+    // The dials move to the restored design and it persists.
+    expect(screen.getByLabelText(/Font size/i, { selector: "#font-size" })).toHaveValue(13);
+    expect(JSON.parse(localStorage.getItem("bindery.design")!).design.font.sizePt).toBe(13);
+    expect(JSON.parse(localStorage.getItem("bindery.budget")!).bounds.fontMaxPt).toBe(16);
+    expect(JSON.parse(localStorage.getItem("bindery.print")!).imposition).toEqual({
+      sheetsPerSignature: 2,
+      flip: "short-edge",
+    });
+    // The design change drove exactly one further paginate; no re-parse.
+    expect(f.paginated.length).toBe(paginatesBefore + 1);
+  });
+
+  it("reports a mismatched source but still applies the settings", async () => {
+    const doc: Document = { ...document, source: { name: "book", byteLength: 0, sha256: "hash-b" } };
+    const f = fakeEngine();
+    const view = render(
+      <Studio document={doc} report={emptyReport()} onReset={() => {}} createEngine={f.create} />,
+    );
+    const project = buildProject(source, applyFontSize(DEFAULT_DESIGN, 12), DEFAULT_BOUNDS, DEFAULT_IMPOSITION);
+    await openFile(view, JSON.stringify(project), "Open project file");
+    expect(
+      screen.getByText("Settings applied. This project came from a different book."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Font size/i, { selector: "#font-size" })).toHaveValue(12);
+  });
+
+  it("shows a plain loaded notice when the source hashes match", async () => {
+    const doc: Document = { ...document, source: { name: "book", byteLength: 0, sha256: "hash-a" } };
+    const f = fakeEngine();
+    const view = render(
+      <Studio document={doc} report={emptyReport()} onReset={() => {}} createEngine={f.create} />,
+    );
+    const project = buildProject(source, DEFAULT_DESIGN, DEFAULT_BOUNDS, DEFAULT_IMPOSITION);
+    await openFile(view, JSON.stringify(project), "Open project file");
+    expect(screen.getByText("Project loaded.")).toBeInTheDocument();
+  });
+
+  it("applies a house style saved from one book to a different book", async () => {
+    const other: Document = {
+      title: "Another Book",
+      author: "B. Writer",
+      language: "en",
+      chapters: [{ id: "x", title: "One", order: 0, blocks: [] }],
+      source: { name: "other", byteLength: 5, sha256: "hash-z" },
+    };
+    const f = fakeEngine();
+    const view = render(
+      <Studio document={other} report={emptyReport()} onReset={() => {}} createEngine={f.create} />,
+    );
+    const paginatesBefore = f.paginated.length;
+    const style = buildHouseStyle(applyFontSize(DEFAULT_DESIGN, 14), DEFAULT_BOUNDS, DEFAULT_IMPOSITION);
+    await openFile(view, JSON.stringify(style), "Apply house style file");
+    await wait(25);
+
+    expect(screen.getByText("House style applied.")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Font size/i, { selector: "#font-size" })).toHaveValue(14);
+    expect(f.paginated.length).toBe(paginatesBefore + 1);
+  });
+
+  it("shows a plain error for an unreadable file and changes no setting", async () => {
+    const { view } = renderBudgetStudio();
+    fireEvent.change(screen.getByLabelText(/Font size/i, { selector: "#font-size" }), {
+      target: { value: "17" },
+    });
+    await openFile(view, "not json at all {", "Open project file");
+    expect(
+      screen.getByText("This file did not load. Choose a project or house style saved here."),
+    ).toBeInTheDocument();
+    // The dial the user set is untouched.
+    expect(screen.getByLabelText(/Font size/i, { selector: "#font-size" })).toHaveValue(17);
+  });
+
+  it("has swept, human copy in its notices", async () => {
+    const { view } = renderBudgetStudio();
+    const notices = [
+      "Saved your project.",
+      "Saved your house style.",
+      "Project loaded.",
+      "House style applied.",
+      "Settings applied. This project came from a different book.",
+      "This file did not load. Choose a project or house style saved here.",
+    ];
+    for (const notice of notices) {
+      expect(notice).not.toMatch(/[—–]/);
+      expect(notice).not.toMatch(/seamless|effortless|unlock|elevate|empower|leverage|robust/i);
+      expect(notice).not.toMatch(/You don't have|No .* yet|Nothing .* here|Unable to|Something went wrong/i);
+    }
+    void view;
   });
 });
 
