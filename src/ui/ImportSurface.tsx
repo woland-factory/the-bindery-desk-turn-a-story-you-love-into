@@ -47,7 +47,12 @@ export function ImportSurface({ onFile, onChooseFile, onOpenSample }: Props) {
           <button type="button" className="btn btn--primary" onClick={onChooseFile}>
             Choose EPUB file
           </button>
-          <button type="button" className="btn btn--ghost" onClick={onOpenSample}>
+          <button
+            type="button"
+            className="btn btn--ghost"
+            data-tour="sample"
+            onClick={onOpenSample}
+          >
             Open the sample book
           </button>
         </div>

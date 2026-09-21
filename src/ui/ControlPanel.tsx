@@ -126,6 +126,7 @@ export function ControlPanel({
         <button
           type="button"
           className="btn btn--primary panel__export"
+          data-tour="export"
           disabled={!canExport || exportState.kind === "running"}
           aria-busy={exportState.kind === "running"}
           onClick={onExport}

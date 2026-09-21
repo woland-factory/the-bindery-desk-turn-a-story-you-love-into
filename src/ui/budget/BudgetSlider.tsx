@@ -101,6 +101,7 @@ export function BudgetSlider({
         <input
           id="budget-target"
           className="budget__slider"
+          data-tour="slider"
           type="range"
           min={min}
           max={max}

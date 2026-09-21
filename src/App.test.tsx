@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { makeAo3, makeStandardEbooks, makeNotAZip } from "./test/epubFixtures";
+import type { EngineClientLike, PaginateHandlers } from "./engine/client";
+import type { ExportClientLike, ExportHandlers } from "./export/client";
+import type { PaginationResult, Page } from "./engine/types";
+import { markFirstRunDone } from "./ui/firstRun/persistFirstRun";
 
 function epubFile(bytes: Uint8Array, name = "book.epub"): File {
   return new File([bytes as BlobPart], name, { type: "application/epub+zip" });
@@ -89,5 +93,120 @@ describe("App: state machine on import", () => {
       await screen.findByRole("heading", { name: "The Public Domain Reader" }),
     ).toBeInTheDocument();
     expect(fetchSpy).toHaveBeenCalledWith("/sample/aesops-fables.epub");
+  });
+});
+
+function pageResult(count: number): PaginationResult {
+  const pages: Page[] = Array.from({ length: count }, (_, index) => ({
+    index,
+    side: index % 2 === 0 ? "recto" : "verso",
+    kind: "body",
+    chapterIndex: 0,
+    lines: [{ text: "a line", x: 0, y: 0, width: 100, hyphenated: false }],
+  }));
+  return { pageCount: count, pages };
+}
+
+function fakeEngine() {
+  let handlers: PaginateHandlers | null = null;
+  const engine: EngineClientLike = {
+    load: vi.fn(),
+    paginate: (_design, h) => {
+      handlers = h;
+    },
+    warmFonts: vi.fn(),
+    dispose: vi.fn(),
+  };
+  return {
+    create: () => engine,
+    settle: () =>
+      act(() =>
+        handlers?.onDone?.(pageResult(6), { wordCount: 10, pageCount: 6, firstFeedbackMs: 5, settleMs: 20 }),
+      ),
+  };
+}
+
+function fakeExport() {
+  let handlers: ExportHandlers | null = null;
+  const client: ExportClientLike = {
+    export: (_input, h) => {
+      handlers = h;
+    },
+    dispose: vi.fn(),
+  };
+  return {
+    create: () => client,
+    finish: () => act(() => handlers?.onDone?.(new ArrayBuffer(8), new ArrayBuffer(4))),
+  };
+}
+
+describe("App: guided first run", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+  const origCreate = URL.createObjectURL;
+  const origRevoke = URL.revokeObjectURL;
+
+  beforeEach(() => {
+    localStorage.clear();
+    fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => makeStandardEbooks().slice().buffer,
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    URL.createObjectURL = vi.fn(() => "blob:mock") as typeof URL.createObjectURL;
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+  });
+
+  async function openSample() {
+    await userEvent.click(screen.getByRole("button", { name: "Open the sample book" }));
+    await screen.findByRole("heading", { name: "The Public Domain Reader" });
+  }
+
+  it("shows step 1 to a brand-new visitor and walks to the first export", async () => {
+    const engine = fakeEngine();
+    const exporter = fakeExport();
+    render(<App createEngine={engine.create} createExport={exporter.create} />);
+
+    // Step 1: open a book.
+    expect(screen.getByText("Open the sample to see a real book.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeInTheDocument();
+
+    // Opening the sample advances to step 2.
+    await openSample();
+    expect(await screen.findByText("Drag the slider to pick your sheet count.")).toBeInTheDocument();
+
+    // Next advances to step 3.
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Click Export to save your two PDFs.")).toBeInTheDocument();
+
+    // Settle so Export enables, then export: the first success ends the tour.
+    await engine.settle();
+    await userEvent.click(screen.getByRole("button", { name: "Export" }));
+    await exporter.finish();
+
+    expect(screen.queryByText("Click Export to save your two PDFs.")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("bindery.firstRun")!)).toEqual({ v: 1, done: true });
+  });
+
+  it("never shows the walkthrough to a returning visitor", () => {
+    markFirstRunDone();
+    render(<App />);
+    expect(screen.queryByText("Open the sample to see a real book.")).not.toBeInTheDocument();
+  });
+
+  it("Skip dismisses the tour permanently", async () => {
+    const { unmount } = render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(screen.queryByText("Open the sample to see a real book.")).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("bindery.firstRun")!)).toEqual({ v: 1, done: true });
+
+    // A reload keeps it hidden.
+    unmount();
+    render(<App />);
+    expect(screen.queryByText("Open the sample to see a real book.")).not.toBeInTheDocument();
   });
 });
