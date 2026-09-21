@@ -3,12 +3,22 @@
 // no upload: a Blob object URL is same-document and never leaves the tab.
 
 /** A book title to a safe file slug: lowercase, [a-z0-9] runs joined by "-". */
-export function filenameSlug(title: string, suffix: "typeset" | "signatures"): string {
+export function titleSlug(title: string): string {
   const base = title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${base || "book"}-${suffix}.pdf`;
+  return base || "book";
+}
+
+/** A book title to a PDF export filename: `<slug>-typeset.pdf` etc. */
+export function filenameSlug(title: string, suffix: "typeset" | "signatures"): string {
+  return `${titleSlug(title)}-${suffix}.pdf`;
+}
+
+/** A book title to a settings filename: `<slug>-project.json` / `-housestyle.json`. */
+export function settingsFilename(title: string, kind: "project" | "housestyle"): string {
+  return `${titleSlug(title)}-${kind}.json`;
 }
 
 /** Wrap bytes in a PDF Blob and return an object URL. The caller revokes it. */
@@ -33,6 +43,14 @@ export function triggerDownload(url: string, filename: string): void {
 /** Build a PDF Blob, save it once, and revoke its URL. */
 export function saveBytes(bytes: ArrayBuffer | Uint8Array, filename: string): void {
   const url = pdfObjectUrl(bytes);
+  triggerDownload(url, filename);
+  URL.revokeObjectURL(url);
+}
+
+/** Wrap text in a Blob, save it once as `filename`, and revoke its URL. */
+export function saveText(text: string, filename: string, mime: string): void {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
   triggerDownload(url, filename);
   URL.revokeObjectURL(url);
 }

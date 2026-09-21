@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { filenameSlug, pdfObjectUrl, saveBytes } from "./download";
+import { filenameSlug, pdfObjectUrl, saveBytes, saveText, settingsFilename } from "./download";
 
 describe("filenameSlug", () => {
   it("lowercases and hyphenates a title, appending the suffix", () => {
@@ -24,6 +24,42 @@ describe("filenameSlug", () => {
     const slug = filenameSlug("A — B – C", "typeset");
     expect(slug).not.toMatch(/[\s—–]/);
     expect(slug).toBe("a-b-c-typeset.pdf");
+  });
+});
+
+describe("settingsFilename", () => {
+  it("builds project and house-style filenames from the same slug logic", () => {
+    expect(settingsFilename("Aesop's Fables", "project")).toBe("aesop-s-fables-project.json");
+    expect(settingsFilename("Middlemarch", "housestyle")).toBe("middlemarch-housestyle.json");
+  });
+
+  it("falls back to book on an empty title", () => {
+    expect(settingsFilename("   ", "project")).toBe("book-project.json");
+  });
+});
+
+describe("saveText", () => {
+  const origCreate = URL.createObjectURL;
+  const origRevoke = URL.revokeObjectURL;
+  afterEach(() => {
+    URL.createObjectURL = origCreate;
+    URL.revokeObjectURL = origRevoke;
+  });
+
+  it("builds an application/json blob and revokes the object URL", () => {
+    let captured: Blob | null = null;
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      captured = blob;
+      return "blob:mock";
+    }) as typeof URL.createObjectURL;
+    const revoke = vi.fn();
+    URL.revokeObjectURL = revoke as typeof URL.revokeObjectURL;
+
+    saveText('{"a":1}', "book-project.json", "application/json");
+
+    expect(captured).not.toBeNull();
+    expect(captured!.type).toBe("application/json");
+    expect(revoke).toHaveBeenCalledWith("blob:mock");
   });
 });
 
