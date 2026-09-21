@@ -893,6 +893,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
+  /* The card body stays click-through so it never steals a click from the
+     control it teaches; only its own Skip/Next buttons take pointer events. */
+  pointer-events: none;
+}
+
+.walkthrough__card .btn {
   pointer-events: auto;
 }
 
