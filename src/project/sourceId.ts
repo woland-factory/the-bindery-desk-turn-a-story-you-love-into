@@ -12,7 +12,9 @@
 export async function sourceId(bytes: Uint8Array): Promise<string | undefined> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) return undefined;
-  const digest = await subtle.digest("SHA-256", bytes);
+  // Cast to BufferSource: a Uint8Array may be backed by a SharedArrayBuffer,
+  // which the DOM lib's ArrayBuffer-only view type rejects at build time.
+  const digest = await subtle.digest("SHA-256", bytes as unknown as BufferSource);
   const view = new Uint8Array(digest);
   let hex = "";
   for (const b of view) hex += b.toString(16).padStart(2, "0");
