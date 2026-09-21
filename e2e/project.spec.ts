@@ -41,9 +41,15 @@ test("a project round-trips the changed dial and the sheet count", async ({ page
   await seedReturning(page);
   await openSample(page);
 
-  // A distinctive change, then let the book re-flow and settle.
+  // The settled default count, stable with no re-flow pending.
+  const base = await readoutSheets(page);
+
+  // A distinctive change, then wait for the re-flow to land away from the
+  // default before reading the count (the readout shows the stale default until
+  // the font-16 re-flow settles).
   await page.locator("#font-size").fill("16");
   await expect(page.locator("#font-size")).toHaveValue("16");
+  await expect.poll(() => readoutSheets(page), { timeout: 30_000 }).not.toBe(base);
   const sheets = await readoutSheets(page);
 
   await openProjectDisclosure(page);
