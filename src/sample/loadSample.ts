@@ -1,4 +1,5 @@
 import { parseEpub, type ParseResult } from "../epub/parseEpub";
+import { sourceId } from "../project/sourceId";
 
 /** Display name shown for the bundled sample. */
 export const SAMPLE_NAME = "Aesop's Fables (sample)";
@@ -15,5 +16,8 @@ export async function loadSample(): Promise<ParseResult> {
   const res = await fetch(SAMPLE_URL);
   if (!res.ok) throw new Error("The sample book could not be loaded.");
   const bytes = new Uint8Array(await res.arrayBuffer());
-  return parseEpub(bytes, SAMPLE_NAME);
+  const result = parseEpub(bytes, SAMPLE_NAME);
+  const sha256 = await sourceId(bytes);
+  if (sha256) result.document.source.sha256 = sha256;
+  return result;
 }

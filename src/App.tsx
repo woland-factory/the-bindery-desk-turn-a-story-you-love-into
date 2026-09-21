@@ -4,6 +4,7 @@ import { isParseError } from "./epub/errors";
 import type { Document } from "./model/document";
 import type { ImportReport } from "./model/importReport";
 import { loadSample } from "./sample/loadSample";
+import { sourceId } from "./project/sourceId";
 import { ImportSurface } from "./ui/ImportSurface";
 import { LoadingState } from "./ui/LoadingState";
 import { ErrorState, type AppError } from "./ui/ErrorState";
@@ -42,9 +43,15 @@ export default function App() {
         setState({ status: "error", error: { kind: "unreadable" } });
         return;
       }
-      void runImport(file.name, async () =>
-        parseEpub(new Uint8Array(await file.arrayBuffer()), file.name),
-      );
+      void runImport(file.name, async () => {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const result = parseEpub(bytes, file.name);
+        // Attach the content hash after parsing, where the bytes are in hand.
+        // Runs once per import, off the hot re-flow path.
+        const sha256 = await sourceId(bytes);
+        if (sha256) result.document.source.sha256 = sha256;
+        return result;
+      });
     },
     [runImport],
   );

@@ -41,8 +41,9 @@ export interface Document {
   language: string;
   /** Ordered by spine. */
   chapters: Chapter[];
-  /** Provenance only. No bytes retained. */
-  source: { name: string; byteLength: number };
+  /** Provenance only. No bytes retained. `sha256` is a content hash a saved
+   * project uses to recognize its book; it is optional and forward-compatible. */
+  source: { name: string; byteLength: number; sha256?: string };
 }
 
 /** Count the kept story blocks in a chapter (headings + paragraphs + notes). */
