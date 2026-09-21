@@ -27,6 +27,12 @@ PDF whose sheets fold into reading order. Both build in a background worker,
 so even a 300,000-word novel exports without freezing the studio, and a
 Print setup panel sets sheets per signature and the duplex flip your printer
 uses. Nothing is uploaded; both files are built from bytes already in the tab.
+Save your work as a project file and open it later to bring the same book back
+exactly, down to the sheet count. Save a house style to carry one book's look to
+the next book in a single click. Project and house-style files are ordinary
+downloads you open back from your own disk, so nothing leaves your computer. The
+first time you visit, a short guided walkthrough leads you from opening the
+sample to your first export, then steps aside and stays gone.
 
 ## Your file stays on your computer
 
@@ -119,7 +125,9 @@ src/
   ui/            import states, the studio (control panel + facing-page preview), structure view
   ui/design/     pure design logic: trim presets, setters, session persistence
   ui/budget/     the paper-budget slider, readout, bounds, and their persistence
+  ui/firstRun/   the guided first-run walkthrough and its persisted flag
   export/        the dual-PDF exporter: geometry, imposition math, PDF builders, worker, client, download
+  project/       project and house-style files: the source hash, file model, and save/open IO
   integrations/  Sentry and Umami, both runtime-gated and privacy-safe
   config/        runtime config read from window.__BINDERY_CONFIG__
   sample/        one-tap loader for the bundled sample book
@@ -127,7 +135,7 @@ public/sample/   the bundled public-domain sample EPUB
 public/fonts/    the curated woff2 book faces, their license, and provenance
 public/fonts/embed/  TTF faces the exporter subsets and embeds, loaded only on export
 docker/          nginx config and the startup script that generates /config.js
-e2e/             Playwright specs: import, pagination, preview, typography, budget, export
+e2e/             Playwright specs: import, pagination, preview, typography, budget, export, project
 ```
 
 The dials write a plain `DesignSpec`; every change re-paginates in the worker

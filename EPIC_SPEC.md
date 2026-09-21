@@ -1,20 +1,27 @@
-# EPIC SPEC — Dual export: typeset PDF and imposed signatures
+# EPIC SPEC — Project file, house-style presets, and guided first run
 
-> EPIC 6 of The Bindery Desk. EPIC 2 built the streamed pagination engine,
-> EPIC 3 the facing-page preview, EPIC 4 the typography dials with live
-> whole-book re-flow, EPIC 5 the paper-budget slider and its solver. This
-> EPIC turns the book on screen into two files a binder can print: a
-> **typeset PDF** that reproduces the preview page for page with the font
-> embedded, and a **printer-ready signature PDF** whose sheets fold into
-> reading order. Both are built entirely in the browser, off the main
-> thread, with visible progress, from one Export click.
+> The final feature EPIC of The Bindery Desk. The engine (streamed
+> pagination), the facing-page preview, the typography dials, the
+> paper-budget slider and solver, and the dual PDF export all ship already.
+> This EPIC makes the binder's work **durable and repeatable**, and it walks
+> a brand-new visitor through their first book once:
 >
-> This EPIC adds NO new typography or budget controls, NO cover or
-> dust-jacket export, NO output format other than PDF, NO cloud storage or
-> upload of any kind, and NO server. It changes neither `DEFAULT_DESIGN`,
-> the dial set, the EPUB parser, nor the pagination engine's output shape.
-> Everything runs in the browser: the main thread plus a new dedicated
-> export worker, alongside the existing pagination worker.
+> - **Save/open a project file** (durability layer 2): a local JSON file
+>   that references the source book and captures every setting, so reopening
+>   the same book restores the exact design and paper budget.
+> - **Save/apply a house-style preset** (durability layer 3): a
+>   settings-only JSON file with no source, so book #12 can inherit the look
+>   of books #1 through #11 in one click and re-paginate.
+> - **A guided first run**: a short, skippable walkthrough anchored to the
+>   real controls that leads a new user from opening a book to exporting it
+>   once, then never appears again.
+>
+> This EPIC adds **no new typography or budget controls**, no cloud sync, no
+> account, no server, no preset sharing service, and no version history
+> beyond the single project file. It does not change `DEFAULT_DESIGN`, the
+> dial set, the pagination engine, the export path, or the engine's output
+> shape. Everything stays entirely in the browser; project and preset files
+> are ordinary downloads the user opens back from their own disk.
 
 ---
 
@@ -23,675 +30,656 @@
 **Live responsiveness of the whole-book re-flow.** Any control, above all
 the paper-budget slider, re-flows the entire book with perceptible feedback
 under 100ms and a settled result within about two seconds on a 300k-word
-novel. We make control immediate and reversible in a way no free path
-(Word, Calibre, Reedsy) offers.
+novel. We make control immediate and reversible in a way no free path (Word,
+Calibre, Reedsy) offers.
 
-**What it demands of THIS EPIC:** export is not the re-flow, but it must
-protect the trust the re-flow earns. Two things follow:
+**What it demands of THIS EPIC:** this EPIC does not run the re-flow, but it
+sits on top of the trust the re-flow earns and must not spend it.
 
-- **The file is exactly the book on screen.** The typeset PDF has the same
-  page count and the same page geometry as the preview for the same
-  settings, built from the same `PaginationResult`. A binder who prints
-  forty sheets without a test page must get the book they were looking at.
-- **Export never freezes the surface.** A 300k-word book is roughly 900
-  pages. Building two PDFs from it must run in a worker with streamed
-  progress, so the studio stays interactive and the paper-budget slider the
-  differentiator lives on never stalls behind an export. A frozen tab during
-  export would break the exact promise EPIC 5 made.
+- **Restore is exact.** Reopening a project restores the same `DesignSpec`,
+  the same solver bounds, and the same print setup, so the deterministic
+  engine lays out the byte-identical book the binder saved. "It came back
+  the same" is the whole promise of durability layer 2.
+- **Apply re-flows, and only that.** Opening a project or applying a house
+  style changes the design and lets the existing live re-flow do its job. It
+  never runs a second layout path, never re-parses, and never blocks the
+  studio. The guided walkthrough points at the live controls; it never
+  stands in front of them or freezes the surface it is teaching.
 
-Export fidelity and a live surface are both in scope from the start.
+Restore fidelity and a live surface are both in scope from the start.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **Typeset PDF.** One PDF page per `Page` in the current settled
-   `PaginationResult`, at the design's trim size, reproducing the preview:
-   mirrored inner/outer margins, running header and folio on body pages,
-   the engine's laid-out lines in the text area, blank pages where the
-   engine inserted them. The book's face is embedded (subset) so the file
-   renders on a machine that lacks the font.
-2. **Imposition math.** A pure, deterministic function that maps a page
-   count to a sheet-by-sheet plan folding into reading order, with
-   **configurable sheets-per-signature** and a **duplex flip** option
-   (long edge default, short edge). Verified against hand-computed 8-page
-   and 16-page saddle-stitch orderings and a physical fold of the sample.
-3. **Signature PDF.** One PDF page per printed sheet side, at the folded
-   sheet size (two trim pages wide by one trim page tall), placing two
-   typeset pages per side per the imposition plan, with the correct
-   rotation for the chosen flip. The last signature is padded with blank
-   pages to a whole number of sheets.
-4. **One-click dual export with progress.** A single Export action builds
-   both PDFs in the export worker, streams progress to the studio, and
-   saves both files. The main thread stays interactive throughout; the
-   300k-word book completes without an out-of-memory failure.
-5. **A small print-setup surface.** Sheets-per-signature and duplex flip,
-   in one disclosure beside the Export button. Sensible defaults, so a
-   first-time binder never has to open it.
-6. **First-run reach.** Export works on the bundled sample with no user
-   file: open the sample, click Export, get two valid PDFs. Proven in e2e.
-7. **No upload, ever.** Both PDFs are built from bytes already in the tab.
-   The book file is never sent anywhere. Proven with the network tab.
-8. **Mobile-first, accessible, swept.** The Export control and print-setup
-   inputs are usable at 390px with ~44px targets and no horizontal scroll;
-   every input labeled; progress announced politely; all copy swept.
+1. **Project file (open + save).** A local JSON file
+   `{ kind, version, source: {name, sha256, byteLength}, design, bounds,
+   imposition }`. Saving downloads it; opening reads it back and applies the
+   settings to the loaded book. The source is referenced by a content hash,
+   never by its bytes: the book is never inside the file.
+2. **Exact round-trip.** Save a project from a book, reload the book, open
+   the project: the design dials, the solver bounds, and the print setup are
+   restored exactly, and the preview re-paginates to the same page and sheet
+   count. Proven in unit tests and e2e.
+3. **Mismatched-source detection.** When the opened project's `source.sha256`
+   differs from the currently loaded book's hash, the app reports it plainly
+   in the product's voice and still applies the settings (settings are
+   book-agnostic). A matching hash applies silently.
+4. **House-style preset (open + save).** A settings-only JSON file
+   `{ kind, version, design, bounds, imposition }` with **no source**.
+   Applying it to a different book sets the design and re-paginates. Proven
+   across two distinct books in unit tests.
+5. **Guided first run.** A skippable walkthrough of **three** one-sentence
+   imperative steps anchored to real controls: open a book (the sample),
+   drag the paper-budget slider, click Export. It advances as the user does
+   the real action, is skippable at any step, and is dismissed permanently
+   on the first successful export or on Skip. A persisted flag means a
+   returning user never sees it.
+6. **Robust, forward-only file reading.** Every opened file is validated at
+   the boundary and every value is clamped through the **existing**
+   sanitizers (`sanitizeDesign`, `sanitizeBounds`, `sanitizeImposition`), so
+   a partial, out-of-range, or hand-edited file still yields a layable design
+   or a plain error, never a crash.
+7. **No upload, ever.** Saving is a browser download; opening reads a local
+   file the user picks (same pattern as EPUB import). No project or preset
+   file, and no book byte, is ever sent anywhere. Consistent with the hard
+   community privacy norm.
+8. **Mobile-first, accessible, swept.** The project/preset controls and the
+   walkthrough are usable at 390px with ~44px targets and no horizontal
+   scroll; every control labeled; notices in a polite live region; the
+   walkthrough is non-modal and keyboard-reachable and never traps focus or
+   blocks the control it points at. All copy swept.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **Cover or dust-jacket export.** No cover surface, no spine width, no
-  paper-thickness input of any kind.
-- **Any output format other than PDF.** No PNG, no per-page images, no
-  print-CSS path, no EPUB re-export.
-- **Cloud storage of exports.** No account, no server, no remote save, no
-  share link. Files are saved locally by the browser.
-- **New typography or budget controls.** The print-setup inputs configure
-  imposition only; they never change the design or trigger a re-flow. Do
-  not add a design dial or a new budget lever.
-- **Changing the engine's output shape.** `PaginationResult`, `Page`,
-  `Line`, and `DesignSpec` are unchanged. Export consumes the settled
-  result read-only; it does not add fields to any engine message.
-- **Re-flowing or re-paginating to export.** Export uses the result the
-  preview already settled on; it does not run a second layout pass with
-  different rules.
-- **Editing the story, re-parsing, or touching the EPUB parser or
-  `Document` model.**
-- **Any runtime LLM, any network path beyond same-origin app assets.**
+- **A preset sharing service or marketplace.** No upload of presets, no
+  gallery, no import-by-URL, no discovery surface. Files are local only.
+- **Cloud sync or account-based storage.** No account, no login, no server,
+  no remote save, no cross-device sync. There is no backend.
+- **Version history beyond the single project file.** No autosave timeline,
+  no undo stack persisted to disk, no multiple named snapshots inside the
+  app. One project file is the unit of durability.
+- **New typography or budget controls.** This EPIC saves and restores the
+  existing settings; it never adds a dial, a bound, or a budget lever.
+- **Changing the engine, the export path, or their output shapes.**
+  `DesignSpec`, `Document`, `PaginationResult`, all worker messages, and the
+  export modules are consumed read-only (the one additive change is an
+  optional `sha256` on `Document.source`, §2.3).
+- **Storing book bytes or book text in any file.** A project file holds
+  settings plus a source *reference* (name, hash, byte length) only.
+- **Editing the story, re-parsing, or a runtime LLM.** No network path
+  beyond same-origin app assets.
+- **An in-app file browser or picker beyond the browser's own.** Saving uses
+  a download; opening uses a native file input.
 
 ---
 
 ## 2. Technical design
 
 ### 2.1 What already exists (consume; change only where named)
-- `src/engine/types.ts` — `DesignSpec`, `Page`, `Line`, `PaginationResult`.
-  **Unchanged.** Export reads `result.pages` and each `Line`'s `x/y/width`.
-- `src/ui/pageGeometry.ts` — `pagePlacement(design, side)` returns the full
-  physical page box and text placement in CSS px (mirrored per side, folio
-  edge, chrome baseline). **Unchanged**; the PDF builder places every page
-  from exactly these numbers, so the file matches the preview by
-  construction.
-- `src/engine/units.ts` — `PX_PER_PT = 96/72`, `PX_PER_IN`, `lengthToPx`,
-  `ptToPx`. **Unchanged**; the builder converts CSS px to PDF points by
-  dividing by `PX_PER_PT` (`pt = px / PX_PER_PT`).
-- `src/ui/runningHead.ts` — `resolveRunningHead(template, ctx)`.
-  **Unchanged**; the builder resolves headers with the same function and
-  the same `{title, author, chapter}` context `PageView` uses.
-- `src/ui/PageView.tsx` — the on-screen leaf. Its soft-hyphen display rule
-  (`displayText`: strip `SOFT_HYPHEN`, append a visible hyphen when
-  `line.hyphenated`) is the single source of truth for rendered line text.
-  **Extract** that rule into a shared pure helper (§2.3) so the PDF and the
-  preview render byte-identical strings; `PageView` then calls the helper.
-- `src/engine/budget.ts` — `PAGES_PER_SHEET` (4), `SHEETS_PER_SIGNATURE`
-  (4), `sheetsForPages`. **Unchanged**; imposition reuses these constants
-  so a "signature" means the same thing the slider readout already states.
-- `src/fonts/catalog.ts` — `FONT_CATALOG`, `entryForStack`, `FontEntry`.
-  **Gains** an `embed` field per embeddable entry (§2.4): the URLs of the
-  TTF/OTF used for embedding. On-screen woff2 rendering is untouched.
-- `src/ui/ControlPanel.tsx` — holds the disabled Export placeholder and its
-  hint. **Gains** a live Export button, its progress/idle/error states, and
-  the print-setup disclosure, wired through props (§2.8).
-- `src/ui/BookPreview.tsx` — owns the engine and the settled
-  `PaginationResult` in `state.result`. **Gains** an `exportRequest` prop
-  and `onExportState` callback, and an effect that drives the export
-  controller from `state.result` (§2.7), mirroring the existing `budget`
-  prop pattern exactly.
-- `src/ui/Studio.tsx` — owns the working design and orchestrates the budget
-  request. **Gains** export request state and the print-setup options
-  (§2.8).
+- `src/engine/types.ts` — `DesignSpec`, `PaginationResult`. **Unchanged.**
+- `src/model/document.ts` — `Document.source` is `{ name, byteLength }`.
+  **Gains** an optional `sha256?: string` (§2.3); no other change.
+- `src/ui/design/persistDesign.ts` — `sanitizeDesign(raw): DesignSpec`,
+  `loadDesign`, `saveDesign`, key `bindery.design`. **Reused unchanged**;
+  `sanitizeDesign` validates the `design` field of any opened file.
+- `src/ui/budget/persistBudget.ts` — `sanitizeBounds(raw): BudgetBounds`,
+  `loadBounds`, `saveBounds`, key `bindery.budget`. **Reused unchanged.**
+- `src/export/persistPrint.ts` — `sanitizeImposition(raw): ImpositionOptions`,
+  `loadImposition`, `saveImposition`, key `bindery.print`. **Reused
+  unchanged.**
+- `src/export/impose.ts` — `ImpositionOptions`, `DEFAULT_IMPOSITION`.
+  **Unchanged**; the project/house-style files carry an `ImpositionOptions`.
+- `src/export/download.ts` — `saveBytes(bytes, filename)` and the filename
+  slug helper. **Reused/extended** with a text saver and a generic filename
+  helper for `-project.json` / `-housestyle.json` (§2.5); the export
+  filenames stay exactly as they are.
+- `src/App.tsx` — owns `empty | loading | ready | error`, the import paths
+  (`onFile`, `onOpenSample` via `runImport`), and the file input. **Gains**
+  the source-hash step at import (§2.3) and the first-run controller plus the
+  `Walkthrough` overlay (§2.6).
+- `src/ui/Studio.tsx` — owns the working `design`, `bounds`, `imposition`,
+  `budgetBase`, the export request, and persistence. **Gains** an
+  `applySettings` path used by open-project and apply-house-style, a
+  mismatch/notice state, the `ProjectControls` surface, an `onExportDone`
+  signal for the tour, and `data-tour` anchors (§2.4, §2.6).
+- `src/ui/ImportSurface.tsx` — the empty-state dropzone with the sample
+  button. **Gains** a `data-tour="sample"` attribute on the sample button.
+- `src/ui/ControlPanel.tsx` — holds the Export button. **Gains** a
+  `data-tour="export"` attribute on that button.
+- `src/ui/budget/BudgetSlider.tsx` — the range input. **Gains** a
+  `data-tour="slider"` attribute on the slider input.
 
-### 2.2 New dependencies
-Two runtime dependencies, both pure-JS and browser-safe, no DOM, no
-network of their own:
-- `pdf-lib` (^1.17.1) — PDF construction, page embedding, save to bytes.
-- `@pdf-lib/fontkit` (^1.1.1) — font subsetting for `embedFont(bytes,
-  { subset: true })`.
-Both run inside the export worker. No other library (no state manager, no
-imposition library) is added; the imposition is a few dozen lines of pure
-arithmetic (MIT prior art: bookbinder-js).
-
-### 2.3 New file / module layout
+### 2.2 New file / module layout
 ```
-src/export/
-  geometry.ts        pure px->pt helpers and the per-line baseline model
-                     (pxToPt(px), pagePointBox(design, side) from
-                     pagePlacement, lineBaselinePt(placement, line, ascent)).
-  geometry.test.ts
-  lineText.ts        the shared soft-hyphen display rule extracted from
-                     PageView (displayLineText(line): string).
-  lineText.test.ts
-  impose.ts          pure, no pdf-lib: ImpositionOptions,
-                     DEFAULT_IMPOSITION, imposeBook(pageCount, options):
-                     ImpositionPlan (§2.6). Deterministic arithmetic only.
-  impose.test.ts
-  fonts.ts           map a DesignSpec to the face to embed and its byte
-                     URLs (reuse entryForStack + the new catalog.embed);
-                     the system serif maps to a designated embeddable
-                     fallback serif so export always embeds a real face.
-  fonts.test.ts
-  pdf.ts             the builders that run in the worker:
-                       buildTypeset(result, design, docMeta, fontBytes, onProgress): Uint8Array
-                       buildSignatures(typesetDoc, plan, design, flip, onProgress): Uint8Array
-                     buildSignatures embeds typeset pages as shared XObjects
-                     (pdf-lib embedPages), never re-drawing text.
-  export.worker.ts   worker entry: receive an ExportRequest, fetch font
-                     bytes same-origin, run both builders with progress,
-                     transfer both ArrayBuffers back. No DOM.
-  protocol.ts        ExportRequest / ExportProgress / ExportDone / ExportError.
-  client.ts          main-thread ExportClient: post the request, forward
-                     progress, resolve with both byte arrays; latest-wins
-                     cancel on a new request; disposes the worker.
-  download.ts        main-thread save: bytes -> Blob -> object URL ->
-                     anchor click; filenameSlug(title, suffix).
-  download.test.ts
-src/fonts/catalog.ts           + embed URLs on embeddable entries
-src/ui/PageView.tsx            call displayLineText (behavior unchanged)
-src/ui/ControlPanel.tsx        live Export button + print-setup disclosure
-src/ui/BookPreview.tsx         + exportRequest prop, onExportState, effect
-src/ui/Studio.tsx              + export request state, print-setup options
-src/styles.css                 Export progress, print-setup disclosure
-public/fonts/embed/            <id>-400 and <id>-700 TTF/OTF for the four
-                               OFL faces (lazy; export-only)
-public/fonts/PROVENANCE.md     record the embed files' sources/versions
-e2e/export.spec.ts             sample export, 300k progress, no-upload, 390px
+src/project/
+  sourceId.ts        async sourceId(bytes: Uint8Array): Promise<string>
+                     SHA-256 hex via crypto.subtle. Pure over its input,
+                     no DOM, no network. Computed once per import (§2.3).
+  sourceId.test.ts
+  projectFile.ts     the file model + serialize/parse (§2.4):
+                       ProjectFile, HouseStyle, LoadedSettings types;
+                       buildProject(source, design, bounds, imposition),
+                       buildHouseStyle(design, bounds, imposition),
+                       readSettingsFile(text): LoadedSettings | LoadError.
+                     Parsing reuses the three existing sanitizers.
+  projectFile.test.ts
+  projectIo.ts       main-thread IO: saveProject / saveHouseStyle (JSON ->
+                     Blob -> download, via download.ts) and readFileText(file).
+  projectIo.test.ts
+src/ui/ProjectControls.tsx        the subordinate save/open surface (§2.4)
+src/ui/ProjectControls.test.tsx
+src/ui/firstRun/
+  persistFirstRun.ts   isFirstRunDone(): boolean, markFirstRunDone(): void
+                       over key `bindery.firstRun`; every touch guarded.
+  persistFirstRun.test.ts
+  Walkthrough.tsx      the non-modal coach-mark overlay (§2.6)
+  Walkthrough.test.tsx
+  steps.ts             TOUR_STEPS: the three anchored step copies (one place
+                       to sweep). Pure data.
+src/model/document.ts               + optional source.sha256
+src/App.tsx                         + import hash, first-run controller, overlay
+src/ui/Studio.tsx                   + applySettings, notice, ProjectControls, tour hooks
+src/ui/ImportSurface.tsx            + data-tour="sample"
+src/ui/ControlPanel.tsx             + data-tour="export"
+src/ui/budget/BudgetSlider.tsx      + data-tour="slider"
+src/export/download.ts              + generic text saver + filename helper (reuse slug)
+src/styles.css                      project controls + coach-mark + 390px
+e2e/project.spec.ts                 round-trip, house style, walkthrough, mobile
 ```
+No new runtime dependency. `crypto.subtle` and the DOM download path are
+platform APIs already available.
 
-### 2.4 Font embedding (the "renders without the font" guarantee)
-The on-screen faces are woff2, which the subsetting path does not consume
-reliably. Export embeds from a TTF/OTF of the **same upstream release** as
-the woff2 (same family and version, so glyph metrics match the measured
-layout). These files live under `public/fonts/embed/` and are fetched by
-the worker only when an export runs, so the initial bundle is untouched.
+### 2.3 Source identity (`src/project/sourceId.ts`, `Document.source.sha256`)
+A project file must be able to tell "is this the same book I saved from?"
+without holding the book. The honest, cheap identity is a content hash.
 
-- `catalog.ts` gains `embed?: { regular: string; bold: string }` on each
-  embeddable entry, pointing at those files. `FontEntry.weights` (woff2,
-  on-screen) is unchanged.
-- `export/fonts.ts` resolves the face for a design via `entryForStack`.
-  For the four OFL faces it returns their `embed` URLs. For the **system
-  serif** (no file, cannot embed the OS Georgia) it returns a designated
-  bundled fallback serif's `embed` URLs, so export always embeds a real,
-  subsettable face and the guarantee is uniform.
-- Because the engine's lines are left-aligned and pre-broken (every
-  `Line.x` is 0; ragged right, no justification), embedding a face whose
-  metrics differ slightly from the measured one can never re-break a line
-  or overflow the column beyond a hair. The four OFL faces embed the exact
-  measured design and reproduce the preview faithfully; the system-serif
-  export substitutes the fallback serif for the OS Georgia and is
-  documented as such. This is honest and never changes the page count.
-- The worker calls `pdfDoc.registerFontkit(fontkit)` then
-  `pdfDoc.embedFont(bytes, { subset: true })` for the regular weight (the
-  only weight the preview draws, §2.5), so only the glyphs actually used
-  ship in the file. Subsetting is also the primary guard against a bloated
-  900-page file. Bundling the bold TTF/OTF is fine for provenance symmetry,
-  but this EPIC embeds and draws the regular weight only.
+- `sourceId(bytes)` returns the lowercase hex SHA-256 of the EPUB bytes via
+  `crypto.subtle.digest("SHA-256", bytes)`. It is pure over its input and
+  runs **once per import**, at the import boundary, off the hot re-flow path.
+  A 64MB digest costs well under the perceived-speed budget and never touches
+  a paginate.
+- `Document.source` gains `sha256?: string` (optional, forward-compatible).
+  The EPUB parser (`parseEpub`) stays pure and synchronous and does **not**
+  compute the hash. Instead each import path attaches it after parsing, where
+  the bytes are in hand:
+  - `App.onFile`: hash the `Uint8Array` it already builds and set
+    `document.source.sha256` before moving to `ready`.
+  - `sample/loadSample.ts`: hash the fetched sample bytes and set
+    `document.source.sha256` on the returned document.
+- If `crypto.subtle` is somehow unavailable, `sha256` stays undefined; the
+  app still works and a project simply cannot assert a match (treated as
+  "unknown", applied without a mismatch notice). This never crashes an
+  import.
 
-**Provenance.** Add the embed files' sources and versions to
-`public/fonts/PROVENANCE.md`; they keep the OFL 1.1 license already in
-`public/fonts/OFL.txt`. No new license obligation beyond the existing four.
+**No PII / no book text.** The hash and byte length are not book text. The
+source `name` is the user's own filename, kept in memory and written only
+into a project file the user saves to their own disk; it is never
+transmitted and never logged.
 
-### 2.5 Typeset PDF geometry (matches the preview by construction)
-`buildTypeset` iterates `result.pages` in order and emits one PDF page each.
-For a page of `side`:
-- **Page box.** `pagePointBox(design, side)` converts `pagePlacement`'s
-  `pageWidthPx/pageHeightPx` to points; the PDF page is created at that
-  size. Every page uses its own side's placement, so verso/recto mirror.
-- **Text area origin.** `textLeftPx`, `textTopPx`, `columnPx`,
-  `textHeightPx` from `pagePlacement`, converted to points. PDF's y-origin
-  is the page bottom, so a top-referenced offset `oTop` becomes
-  `pageHeightPt - oTop`.
-- **Lines.** For each `Line`, x = `textLeftPt + pxToPt(line.x)` (0 in this
-  engine, left aligned). The baseline is modeled on the CSS line box
-  `PageView` renders: a box of height `lineHeightPx` starting at
-  `textTopPx + line.y`, font-size `fontSizePx`, text vertically centered by
-  line-height. `lineBaselinePt` computes the baseline from the top of that
-  box using the embedded font's ascent (via fontkit) and the half-leading
-  `(lineHeightPx - fontSizePx)/2`, then flips to PDF's bottom origin. The
-  string drawn is `displayLineText(line)` (§2.3). **Weight.** `PageView`
-  sets no `font-weight` on any line, header, or folio, so the on-screen leaf
-  draws everything at the regular weight (the engine measures heading blocks
-  bold, but the preview renders them regular; do not "fix" that here). To
-  match the preview, the typeset PDF draws every line, header, and folio in
-  the embedded **regular** weight. The bold weight is not needed for
-  fidelity in this EPIC; `export/fonts.ts` may resolve regular only.
-- **Chrome.** For `kind === "body"`, draw the running head at
-  `chromeBaselinePx` (from `pagePlacement`) using
-  `resolveRunningHead(template, {title, author, chapter})` with the chapter
-  title looked up from `docMeta.chapterTitles[page.chapterIndex]`, and the
-  folio (`page.index + 1`) at the `folioEdge`. `kind === "blank"` and
-  `kind === "opener"` follow `PageView`'s rules (openers carry no running
-  head/folio only if `PageView` omits them; match `PageView`). Blank pages
-  draw nothing.
-- **`docMeta`** passed from the main thread is small: `{ title, author,
-  chapterTitles: Record<number, string> }`, built once from the `Document`.
-  No book text beyond chapter titles crosses in metadata; the page text is
-  already in `result.pages`.
+### 2.4 File model and controls (`projectFile.ts`, `ProjectControls.tsx`)
 
-**Page count equals the preview.** The typeset PDF has exactly
-`result.pageCount` pages because it emits one per `Page`. This is the
-proof of acceptance criterion 4 and is asserted directly.
-
-### 2.6 Imposition (`src/export/impose.ts`, pure)
+**Types.**
 ```ts
-interface ImpositionOptions { sheetsPerSignature: number; flip: "long-edge" | "short-edge" }
-const DEFAULT_IMPOSITION = { sheetsPerSignature: SHEETS_PER_SIGNATURE, flip: "long-edge" }
+const PROJECT_KIND = "bindery-project";
+const HOUSESTYLE_KIND = "bindery-housestyle";
+const FILE_VERSION = 1;
 
-interface PlacedPage { source: number | null; rotation: 0 | 180 } // 1-based page, null = blank
-interface SheetSide { left: PlacedPage; right: PlacedPage }        // one printed side
-interface ImpositionPlan {
-  sides: SheetSide[];        // in print order; even index = front, odd = back
-  paddedPageCount: number;   // pageCount rounded up to a whole number of sheets
-  signatureCount: number;
+interface SourceRef { name: string; sha256?: string; byteLength: number }
+
+interface ProjectFile {
+  kind: typeof PROJECT_KIND;
+  version: number;
+  source: SourceRef;
+  design: DesignSpec;
+  bounds: BudgetBounds;
+  imposition: ImpositionOptions;
 }
-imposeBook(pageCount: number, options: ImpositionOptions): ImpositionPlan
+interface HouseStyle {
+  kind: typeof HOUSESTYLE_KIND;
+  version: number;
+  design: DesignSpec;
+  bounds: BudgetBounds;
+  imposition: ImpositionOptions;
+}
+
+// What the UI applies, regardless of which file kind was opened.
+interface LoadedSettings {
+  ok: true;
+  origin: "project" | "housestyle";
+  design: DesignSpec;
+  bounds: BudgetBounds;
+  imposition: ImpositionOptions;
+  source?: SourceRef;            // present only for a project file
+}
+interface LoadError { ok: false }
 ```
 
-**Padding and signatures.** `PAGES_PER_SHEET = 4`. Round `pageCount` up to
-`paddedPageCount`, a multiple of 4. Split into signatures of
-`sheetsPerSignature * 4` pages each; the final signature takes the
-remainder (still a multiple of 4, so it may hold fewer sheets than
-configured). Padding pages (`source > pageCount`) render blank.
+**Why design + bounds + imposition (and not a stored slider target).** The
+paper-budget *target* the user drags to is transient: the solver bakes its
+result into the `DesignSpec` (font size, leading, margins). Restoring the
+design therefore restores the byte-identical solved book; restoring the
+`bounds` restores the solver's rails ("the paper budget"). A separately
+stored target would force a re-solve on open for no fidelity gain, so it is
+intentionally not stored. This satisfies "restores the exact settings and
+paper budget": design + bounds + imposition fully determine the pages.
 
-**Per-signature saddle-stitch order.** For a signature of `n` pages
-(local 1..n, global = signatureStart + local), `sheets = n / 4`, for each
-sheet `k` in `0..sheets-1`:
-- front side: left = `n - 2k`, right = `1 + 2k`
-- back side:  left = `2 + 2k`, right = `n - 1 - 2k`
+**Serialize.** `buildProject(source, design, bounds, imposition)` and
+`buildHouseStyle(design, bounds, imposition)` return the literal objects
+above with the constant `kind` and `version`. No `Date.now`, no randomness,
+so two saves of the same state are byte-identical (determinism).
 
-Emit, per signature, for `k = 0..sheets-1`: the front side then the back
-side. Concatenate signatures in order.
+**Parse (`readSettingsFile(text)`).**
+1. `JSON.parse` inside try/catch. On throw → `{ ok: false }`.
+2. Read `kind`. `PROJECT_KIND` → `origin: "project"`; `HOUSESTYLE_KIND` →
+   `origin: "housestyle"`; anything else → `{ ok: false }`.
+3. Run `design` through `sanitizeDesign`, `bounds` through `sanitizeBounds`,
+   `imposition` through `sanitizeImposition` (each already merges forward
+   onto its default and clamps, so a missing or bad field is safe).
+4. For a project, read `source` defensively into a `SourceRef` (string
+   `name`, optional string `sha256`, numeric `byteLength`); tolerate a
+   missing source (leave `source` undefined). `version` is read but a
+   higher/lower value is accepted (forward-compatible; the sanitizers absorb
+   shape drift).
+5. Return `LoadedSettings`.
 
-**Golden orderings (the automated proof).** A single 8-page signature
-(`sheetsPerSignature` large enough to hold it, long edge) yields, as
-`[left, right]` per side in print order:
+**`ProjectControls.tsx`.** A visibly subordinate surface in the control
+column (below the dials, styled as ghost buttons inside a
+`<details><summary>Project and presets</summary>` disclosure so it never
+competes with the primary Export action). It renders four labeled buttons
+and two hidden native file inputs (same hidden-input-plus-button pattern as
+the EPUB import in `App.tsx`):
+
+- **Save project** → `onSaveProject()`.
+- **Open project** → clicks the project file input; on change reads the file
+  and calls `onOpenFile(text)`.
+- **Save house style** → `onSaveHouseStyle()`.
+- **Apply house style** → clicks the house-style file input; on change reads
+  the file and calls `onOpenFile(text)`.
+
+Both open inputs accept `.json,application/json`. A single polite live-region
+line shows the current notice (saved / loaded / mismatch / error). Props are
+plain callbacks plus the `notice` string, so the component is trivially
+testable with a fake.
+
+**Studio wiring.**
+- New state: `notice: string` (default empty) shown via `ProjectControls`.
+- `onSaveProject()` builds `source` from `document.source`
+  (`{ name, sha256, byteLength }`) plus the current `design`, `bounds`,
+  `imposition`, calls `saveProject(...)`, sets notice "Saved your project."
+- `onSaveHouseStyle()` builds from `design`, `bounds`, `imposition`, calls
+  `saveHouseStyle(...)`, sets notice "Saved your house style."
+- `onOpenFile(text)` calls `readSettingsFile(text)`. On `{ ok: false }` set
+  the error notice. On success call `applySettings(loaded)`:
+  - `setDesign`, `saveDesign`; `setBounds`, `saveBounds`; `setImposition`,
+    `saveImposition` (persist so a later reload keeps them).
+  - `setBudgetBase(loaded.design)` and `clearSolveDisplay()` so future solves
+    anchor to the restored design and no stale solve readout lingers.
+  - Setting `design` drives the existing preview re-paginate; **no** extra
+    layout path is added.
+  - Notice: for a house style → "House style applied." For a project, compare
+    `loaded.source?.sha256` to `document.source?.sha256`: both present and
+    equal → "Project loaded."; both present and different → the mismatch
+    notice (§4); source absent on either side → "Project loaded." (unknown
+    match, applied).
+- `applySettings` never re-parses, never blanks the mounted book, and never
+  touches the export request.
+
+### 2.5 Saving and filenames (`projectIo.ts`, `download.ts`)
+- Extend `download.ts` with a generic `saveText(text, filename, mime)` that
+  wraps a `Blob`, creates an object URL, clicks a transient `<a download>`,
+  and revokes the URL (the same mechanism `saveBytes` already uses; factor
+  the shared Blob-download step so both call one helper, or add `saveText`
+  beside `saveBytes`). Export's `saveBytes` behavior and the two export
+  filenames are unchanged.
+- A filename helper produces `<slug>-project.json` and
+  `<slug>-housestyle.json`, reusing the existing title-slug logic (lowercase,
+  keep `[a-z0-9]`, single-hyphen runs, fall back to `book` when empty). No
+  spaces, no em dash, no en dash.
+- `projectIo.saveProject(project, title)` and
+  `saveHouseStyle(style, title)` serialize with `JSON.stringify(obj, null, 2)`
+  and call `saveText(json, filename, "application/json")`.
+- `projectIo.readFileText(file): Promise<string>` reads a `File` to text
+  (`file.text()`), used by `ProjectControls`.
+
+### 2.6 Guided first run (`firstRun/`, App + Studio wiring)
+
+**Persistence.** `persistFirstRun.ts` reads/writes a boolean under key
+`bindery.firstRun` (`{ v: 1, done: true }`), guarded so private-mode or
+disabled storage degrades to in-memory (the tour then shows this session and
+simply does not persist its dismissal). `isFirstRunDone()` returns false when
+nothing valid is stored; `markFirstRunDone()` writes it and never throws.
+
+**Steps (`steps.ts`).** Exactly three, each one short imperative sentence,
+each bound to a `data-tour` anchor:
 ```
-front0 [8, 1]   back0 [2, 7]   front1 [6, 3]   back1 [4, 5]
+1  anchor "sample"  "Open the sample to see a real book."
+2  anchor "slider"  "Drag the slider to pick your sheet count."
+3  anchor "export"  "Click Export to save your two PDFs."
 ```
-A single 16-page signature yields:
-```
-front0 [16,1]  back0 [2,15]  front1 [14,3]  back1 [4,13]
-front2 [12,5]  back2 [6,11]  front3 [10,7]  back3 [8,9]
-```
-These match the standard saddle-stitch tables and are pinned in
-`impose.test.ts`. They are also the reference for the physical fold test
-(below): if a physical fold of the sample proves the nesting differs, the
-formula and these goldens change together, since the criterion is
-"folds into correct reading order," proven physically.
 
-**Duplex flip.** `long-edge` (default): back sides as written, `rotation:
-0`. `short-edge`: the printer flips the reverse on the short edge, so each
-**back** side is rotated 180 and its two pages swap positions
-(`left`/`right` exchanged, both `rotation: 180`). Front sides are never
-rotated. A golden test pins the short-edge transform of the 8-page case.
+**Controller (in `App.tsx`).**
+- On mount: `tour = isFirstRunDone() ? null : { step: 1 }`. If null the
+  overlay never mounts (returning user never sees it — the acceptance
+  criterion).
+- Step 1 → 2 advances automatically when the app state becomes `ready` (a
+  book loaded, by drop, file pick, or the sample). An effect on
+  `state.status` does this while `tour?.step === 1`.
+- Step 2 → 3 advances on the walkthrough's **Next** control (the drag is
+  encouraged, not forced; the anchored slider stays fully operable).
+- Step 3 ends the tour when the first export completes: `Studio` calls
+  `onExportDone` (fired once, when `exportState.kind` becomes `"done"`); App
+  then `markFirstRunDone()` and `setTour(null)`.
+- **Skip** on any step calls `markFirstRunDone()` and `setTour(null)`, so the
+  user is never nagged again.
 
-### 2.7 Signature PDF and the worker
-`buildSignatures` takes the already-built typeset `PDFDocument`, embeds its
-pages once (`embedPages` -> shared XObjects, so page content is never
-duplicated in memory), and for each `SheetSide` creates one PDF page at the
-folded-sheet size `(2 * trimW) x trimH` in points, landscape. It draws the
-`left` page in the left half and the `right` page in the right half at true
-trim size, applying each `PlacedPage.rotation`. A `source` past
-`pageCount` (padding) or `null` draws nothing (blank). Signature PDF page
-count equals `plan.sides.length`.
+**`Walkthrough.tsx` (non-modal coach-mark).** Rendered at App level inside
+`.app` so it can point at the import surface first and the studio later. It
+takes `{ step, text, onNext, onSkip, showNext }`. It locates the current
+step's target with `document.querySelector('[data-tour="…"]')`, positions a
+small card near it via `getBoundingClientRect` (repositioned on window resize
+and scroll), and draws a light highlight ring on the target. It is **not**
+modal: no full-screen blocking backdrop, no focus trap; the anchored control
+stays clickable and keyboard-focusable so the user completes the real action.
+The card holds the step text, a **Skip** button always, and a **Next** button
+on step 2 only. The text is in a polite live region. If the target is not in
+the DOM yet (e.g. step 2 before the studio mounts), the card hides until it
+appears. On a viewport at or below ~430px the card docks to the bottom of the
+screen (a bar pointing at the control) rather than floating, so positioning
+math never pushes it off-screen. Positioning is best-effort and proven
+visually in e2e; presence, text, advancement, Skip, and the persisted flag
+are proven in unit tests.
 
-**Export worker flow (`export.worker.ts`):**
-1. Receive `ExportRequest { requestId, result, design, docMeta, imposition }`.
-   `result` and `docMeta` cross by structured clone (one-time cost per
-   export; the pages are the exact settled result from the preview).
-2. Resolve the face (`export/fonts.ts`) and `fetch` its regular-weight
-   embed bytes same-origin. On a fetch failure post `ExportError`
-   (product-voice).
-3. `buildTypeset` with an `onProgress` that posts `ExportProgress
-   { phase: "typeset", page, total }` every ~50 pages.
-4. `imposeBook(result.pageCount, imposition)`, then `buildSignatures` with
-   `onProgress` posting `{ phase: "impose", side, total }` every ~50 sides.
-5. Save both docs to bytes and post `ExportDone { requestId, typeset,
-   signatures }` transferring both `ArrayBuffer`s. Latest-wins: if a newer
-   `requestId` arrived, drop the stale one before posting.
+**Anchors.** `data-tour="sample"` on `ImportSurface`'s sample button;
+`data-tour="slider"` on `BudgetSlider`'s range input; `data-tour="export"`
+on `ControlPanel`'s Export button. These are inert attributes; they change no
+behavior and are safe if the tour never runs.
 
-**Main thread never blocks.** All pdf-lib work is in the worker. The main
-thread only builds `docMeta`, forwards progress to the UI, and on done
-turns two `ArrayBuffer`s into downloads (§2.9). A rAF/interaction check in
-e2e proves the surface stays live during a 300k export.
-
-**Memory (no OOM on 300k).** One subset font per doc; typeset pages embedded
-as shared XObjects in the signature doc (not redrawn); progress rather than
-buffering strings; transfer (not copy) the results back. These bound peak
-memory to roughly one typeset doc plus its shared-page signature doc.
-
-### 2.8 Protocol, client, and UI wiring
-- **`export/protocol.ts`:**
-  ```ts
-  interface ExportRequest { requestId: number; result: PaginationResult;
-    design: DesignSpec; docMeta: DocMeta; imposition: ImpositionOptions }
-  interface ExportProgress { type: "progress"; requestId: number;
-    phase: "typeset" | "impose"; done: number; total: number }
-  interface ExportDone { type: "done"; requestId: number;
-    typeset: ArrayBuffer; signatures: ArrayBuffer }
-  interface ExportError { type: "error"; requestId: number; message: string }
-  ```
-- **`export/client.ts` (`ExportClient`)** creates the worker lazily, posts a
-  request with a monotonic `requestId`, forwards progress, resolves the
-  active request on done, rejects on error, and ignores stale replies. It
-  exposes `export(request, handlers)` and `dispose()`, and a
-  `ExportClientLike` interface plus a test fake, matching `engine/client.ts`
-  conventions. A timings hook is not required.
-- **`BookPreview`** gains:
-  ```ts
-  exportRequest?: { seq: number; imposition: ImpositionOptions } | null;
-  onExportState?: (state: ExportUiState) => void; // idle | { phase, pct } | error | done
-  ```
-  An effect keyed on `exportRequest?.seq`, active only when
-  `state.status === "ready"`, builds `docMeta` from `document`, and calls
-  the export controller with `state.result`, `renderDesign`, and the
-  request's `imposition`. It forwards progress and, on done, saves both
-  files via `download.ts` and reports `done`; on error reports `error`.
-  A new seq while one export runs supersedes it (latest-wins in the client).
-  Export never mutates preview state, never re-paginates, and never blanks.
-- **`Studio`** gains `imposition` (init `DEFAULT_IMPOSITION`, optional
-  persist via a small `bindery.print` localStorage key), an `exportSeq`
-  bumped on Export click, and passes `exportRequest = { seq, imposition }`
-  to `BookPreview`. It receives `onExportState` and forwards it to
-  `ControlPanel` for the button's live label. The print-setup edits update
-  `imposition` only; they never touch the design or trigger a solve.
-- **`ControlPanel`** replaces the disabled Export placeholder with a live
-  button that is enabled once the preview has settled at least one page and
-  disabled while `exportState.phase` is set; it shows the progress label
-  during a run and the error/next-step message on failure. Below it, a
-  `<details><summary>Print setup</summary></details>` holds two labeled
-  controls: **Sheets per signature** (a select of whole-sheet options,
-  default `SHEETS_PER_SIGNATURE`) and **Duplex flip** (Long edge / Short
-  edge). Export stays the single primary action in the column.
-
-### 2.9 Download (`src/export/download.ts`)
-`saveBytes(bytes, filename)` wraps a `Blob` (`type:
-"application/pdf"`), creates an object URL, clicks a transient `<a
-download>`, and revokes the URL. On Export done, save the typeset file then
-the signature file (a short tick apart so a browser does not suppress the
-second), and also surface two visible download links in the status area as
-a fallback if the browser blocked an automatic save. `filenameSlug(title,
-suffix)` lowercases the book title, keeps `[a-z0-9]`, joins runs with a
-single hyphen, falls back to `book` when empty, and appends `-typeset.pdf`
-or `-signatures.pdf`. No spaces, no em dash, no en dash in filenames.
-
-### 2.10 Determinism, security, accessibility
-- **Determinism.** `impose.ts`, `geometry.ts`, `lineText.ts`, and `pdf.ts`
-  are pure over their inputs; no `Date.now`/`Math.random` anywhere in the
-  build. The same result, design, and imposition options always produce
-  byte-comparable PDFs (page counts, sizes, imposition order stable).
-- **Security / no upload.** No server, no new outbound path. The only
-  network calls are same-origin GETs for the embed font files (app assets,
-  like the existing woff2). The book file's bytes are never in any request.
-  No book text or PII in any log, message, or error. Storage access
-  (`bindery.print`) is try/caught and degrades silently.
-- **Accessibility.** The Export button is a real `<button>` with a visible
-  label and `aria-busy` during a run; progress is one polite live region;
-  the print-setup controls are labeled native inputs inside a
-  `fieldset`/`legend` within the disclosure; focus visible via the existing
-  `:focus-visible` rule; keyboard reaches the button, the disclosure
-  summary, and every control; targets clear 44px at 390px.
+### 2.7 Determinism, security, accessibility
+- **Determinism.** `sourceId`, `buildProject`, `buildHouseStyle`, and
+  `readSettingsFile` are pure over their inputs; no `Date.now`, no
+  `Math.random`. Identical state serializes to identical bytes; an opened
+  file always sanitizes to the same design.
+- **Security / no upload.** No server, no new outbound path. Opening reads a
+  local file the user selects; saving is a browser download. No project/preset
+  file or book byte is in any request. Every opened file is validated at the
+  boundary and clamped through the existing sanitizers. `JSON.parse` is
+  guarded; no `eval`, no dynamic code. Storage access (`bindery.firstRun` and
+  the persisted design/bounds/imposition on apply) is try/caught. No book
+  text or PII in any log, message, or error.
+- **Accessibility.** Project/preset actions are real labeled `<button>`s; the
+  hidden file inputs carry `aria-label`s; the notice is one polite live
+  region. The walkthrough is non-modal, keyboard-reachable, never traps
+  focus, and leaves the anchored control operable; Skip/Next are real buttons
+  with visible focus via the existing `:focus-visible` rule; the step text is
+  announced politely. All targets clear ~44px at 390px; no horizontal scroll.
 
 ---
 
 ## 3. Ordered task list (each maps to acceptance criteria)
 
-### T1 — Pure export math and text (`geometry.ts`, `lineText.ts`, `impose.ts`)
-px->pt helpers and the baseline model; the extracted soft-hyphen display
-rule (with `PageView` switched to call it, behavior unchanged); the
-imposition planner with padding, signature splitting, saddle-stitch order,
-and the flip transform.
-**AC (Vitest, jsdom-safe):** `pxToPt` and `pagePointBox` invert the CSS-px
-geometry correctly; `displayLineText` returns exactly what `PageView`
-rendered before (a snapshot over hyphenated and plain lines); `imposeBook`
-matches the pinned 8-page and 16-page goldens, pads non-multiples of 4 to
-whole sheets, splits into signatures with a possibly-shorter last one, and
-applies the short-edge transform (back sides swapped and rotated 180, fronts
-untouched); every `PlacedPage.source` is either a valid 1..paddedPageCount
-index or null; two identical calls are equal.
+### T1 — Source identity and model (`sourceId.ts`, `document.ts`, import paths)
+Add `sourceId(bytes)` (SHA-256 hex via `crypto.subtle`); add optional
+`sha256` to `Document.source`; attach the hash at both import paths
+(`App.onFile`, `loadSample`) without making `parseEpub` async.
+**AC (Vitest):** `sourceId` returns a 64-char lowercase hex string; identical
+bytes hash equal, one flipped byte hashes different; the sample and a file
+import both produce a document whose `source.sha256` is set; a missing
+`crypto.subtle` leaves `sha256` undefined and does not throw; existing
+`parseEpub` tests pass unchanged.
 
-### T2 — Font resolution and embedding assets (`fonts.ts`, catalog, assets)
-Add `embed` URLs to embeddable catalog entries; add the four faces' TTF/OTF
-under `public/fonts/embed/` (same upstream release as the woff2); record
-them in `PROVENANCE.md`; `export/fonts.ts` resolves a design to the face to
-embed, mapping the system serif to the designated fallback serif.
-**AC (Vitest):** `resolveExportFont` returns the matching embed URLs for
-each OFL face and the fallback serif's URLs for the system serif; the embed
-files exist and are non-empty; on-screen `catalog` lookups and
-`loadFontFace` behavior are unchanged (existing font tests pass).
+### T2 — File model (`projectFile.ts`, `projectIo.ts`, `download.ts`)
+The project/house-style types; `buildProject`, `buildHouseStyle`;
+`readSettingsFile` reusing the three sanitizers; the JSON save helpers and the
+`-project.json` / `-housestyle.json` filename helper; `readFileText`.
+**AC (Vitest):** `buildProject` then `readSettingsFile(JSON.stringify(...))`
+round-trips design, bounds, and imposition to values deep-equal to the
+sanitized inputs, with `origin: "project"` and the source ref preserved;
+`buildHouseStyle` round-trips with `origin: "housestyle"` and no source;
+non-JSON text, an unknown `kind`, and an empty object each return
+`{ ok: false }`; an out-of-range design/bounds/imposition in the file is
+clamped to a layable value by the existing sanitizers; a project with a
+missing `source` still loads (source undefined); two `buildProject` calls on
+the same state serialize to identical strings; the filename helper lowercases,
+hyphenates, strips punctuation, and falls back to `book`; `saveText` builds an
+`application/json` blob and revokes its URL; export's `saveBytes` and the two
+export filenames are unchanged.
 
-### T3 — PDF builders (`pdf.ts`)
-`buildTypeset` (one page per `Page`, mirrored geometry, headers/folios,
-embedded subset font, blank pages) and `buildSignatures` (folded-sheet
-pages, two embedded typeset pages per side, rotation per plan).
-**AC (Vitest, pdf-lib in jsdom, `SyntheticMeasurer`-built results):**
-loading the typeset bytes back yields exactly `result.pageCount` pages,
-each at the trim size in points for its side; the document carries an
-**embedded, subsetted** font (a font descriptor with an embedded FontFile
-stream and a subset tag), proving the "renders without the font" criterion;
-the signature bytes load to `plan.sides.length` pages at the folded-sheet
-size; a small book with a page count not divisible by the signature size
-produces trailing blank cells in the last signature and no error; building
-never throws on a blank-only or single-page result.
+### T3 — Project controls and Studio apply (`ProjectControls.tsx`, `Studio.tsx`)
+The subordinate disclosure with four buttons, two hidden inputs, and the
+notice line; Studio's `onSaveProject`, `onSaveHouseStyle`, `onOpenFile`,
+`applySettings`, and the mismatch/notice logic.
+**AC (Vitest + Testing Library, fakes for save/read):** the four buttons are
+present, labeled, and visibly subordinate to Export; Save project and Save
+house style call their save helper once with a correctly built file and set
+the saved notice; Open project reads a file and applies its settings; after
+apply, `design`, `bounds`, and `imposition` are updated and persisted (the
+three `save*` functions called) and the preview re-paginates (design changed);
+a project whose `source.sha256` differs from the loaded book shows the
+mismatch notice and still applies; a matching project shows "Project loaded.";
+applying a house style built from one document to a **different** document
+(two synthetic `Document`s) sets the design and re-paginates and shows "House
+style applied."; an unreadable/unknown file shows the plain error notice and
+changes no setting; a copy-sweep test over the component's strings finds no
+em/en dash, no banned vocabulary, and no negative empty-state phrasing;
+existing `Studio` and `App` suites pass.
 
-### T4 — Export worker, protocol, client (`export.worker.ts`, `protocol.ts`, `client.ts`, `download.ts`)
-Wire the worker to fetch font bytes, run both builders with progress, and
-transfer both results; the main-thread client with latest-wins and dispose;
-the download helper and filename slug.
-**AC (Vitest with a fake worker / mocked fetch):** an export request drives
-both phases and resolves with two non-empty byte arrays; progress messages
-arrive for both `typeset` and `impose` phases with monotonic `done`; a
-newer `requestId` supersedes an in-flight export and the stale done is
-dropped; a font fetch failure yields a product-voice `ExportError`;
-`filenameSlug` lowercases, hyphenates, strips punctuation, falls back to
-`book`, and never emits a space or dash-aside; `saveBytes` builds a
-`application/pdf` blob and revokes its URL.
+### T4 — Guided first run (`firstRun/*`, `App.tsx`, anchors)
+`persistFirstRun`; `steps.ts`; the `Walkthrough` overlay; the App controller
+(mount gate, state-driven step 1→2, Next 2→3, export-done end, Skip); the
+`onExportDone` signal from Studio; the three `data-tour` anchors.
+**AC (Vitest + Testing Library):** with the flag unset, mounting App shows the
+step-1 text and a Skip control; moving to `ready` (open the sample) advances
+to the step-2 text; Next advances to step-3 text; signaling export done
+removes the overlay and calls `markFirstRunDone` (flag now set); remounting
+App with the flag set renders no walkthrough; Skip on any step sets the flag
+and removes the overlay; `isFirstRunDone`/`markFirstRunDone` round-trip and a
+storage error is swallowed; the `data-tour` anchors exist on the sample
+button, the slider input, and the Export button; a copy-sweep test over
+`steps.ts` and the overlay's own strings passes.
 
-### T5 — Preview and Studio wiring (`BookPreview.tsx`, `Studio.tsx`)
-The `exportRequest` effect off `state.result`, `onExportState`, export
-request state and print-setup options in Studio, optional persistence.
-**AC (Vitest, fake export client):** bumping `exportRequest.seq` calls the
-client once with the current `result`, `renderDesign`, and `imposition`;
-export does not re-paginate, does not blank the mounted book, and does not
-move scroll; progress flows to `onExportState`; on done both files are
-saved (the download helper is called twice); on error the error state is
-reported; print-setup edits change `imposition` only and never trigger a
-paginate or solve; existing `BookPreview`, `Studio`, and `App` suites pass.
+### T5 — Styles and mobile (`styles.css`)
+Style the project/preset disclosure as subordinate ghost actions; style the
+coach-mark card, its highlight ring, and its bottom-docked mobile variant.
+**AC:** at 390px the project/preset controls and the walkthrough card are
+usable with ~44px targets and no horizontal scroll; the coach-mark does not
+cover the control it points at; focus states are visible. Verified in e2e
+(§T6) and by the 390px check.
 
-### T6 — ControlPanel Export surface and styles (`ControlPanel.tsx`, styles)
-Replace the disabled placeholder with a live button and its idle/progress/
-error states; the print-setup disclosure with two labeled controls; CSS for
-the progress affordance and the disclosure at 390px.
-**AC (Vitest + Testing Library):** the button is disabled before the first
-settled page and enabled after; clicking it fires the export callback once;
-during a run it is `aria-busy` and shows the progress label; the error
-state shows the §4 message with a next step; print-setup controls are
-labeled, default to `SHEETS_PER_SIGNATURE` and Long edge, and fire their
-change callbacks; a copy-sweep test over the component's strings finds no
-em/en dash, no banned vocabulary, and no negative phrasing.
-
-### T7 — e2e export harness (`e2e/export.spec.ts`)
-Against the production build, Chromium:
-- **Sample dual export (first minute, no file):** open the sample, click
-  Export, capture both `download` events, assert two `*.pdf` files save and
-  each is a non-empty valid PDF (loads with a positive page count).
-- **No upload:** with request interception, assert no cross-origin request
-  and that no request body carries the book bytes across the whole export
-  (same-origin font-asset GETs allowed), mirroring `import.spec.ts`.
-- **300k progress, live surface, no freeze:** open Middlemarch, settle,
-  click Export; assert the progress label advances through both phases, the
-  studio stays interactive during the export (a control responds / the
-  slider is still operable), and both downloads complete within a generous
-  timeout without a crash.
-- **Print setup:** open the disclosure, choose Short edge and a different
-  sheets-per-signature, export the sample, and assert the export still
-  completes and saves two files.
-- **390px:** Export button and opened print-setup usable at 390x780, ~44px
-  targets, no horizontal scroll.
+### T6 — e2e harness (`e2e/project.spec.ts`, Chromium, production build)
+- **Project round-trip:** open the sample, change a dial and drag the slider,
+  Save project (capture the download), reopen the sample, Open project
+  (`setInputFiles` the captured file), and assert the changed dial value and
+  the slider readout are restored.
+- **House style save/apply:** save a house style from the sample, then Apply
+  house style (the captured file) and assert the notice and that the preview
+  re-paginates without error. (The cross-*book* proof lives in the T3 unit
+  test with two documents, since only the sample EPUB is committed; note this
+  in the spec.)
+- **Mismatch notice:** open a project file whose source hash was altered (a
+  fixture built in-test from a saved project with a changed `sha256`) against
+  the sample and assert the mismatch notice appears and settings still apply.
+- **Walkthrough:** a fresh context (cleared storage) shows step 1; opening the
+  sample advances it; exporting removes it; a reload does not show it again;
+  in a second fresh context, Skip removes it and a reload keeps it hidden.
+- **390px:** project controls and the walkthrough usable at 390x780 with no
+  horizontal scroll.
 **AC:** all pass; `import.spec.ts`, `pagination.spec.ts`, `preview.spec.ts`,
-`typography.spec.ts`, and `budget.spec.ts` pass unchanged.
+`typography.spec.ts`, `budget.spec.ts`, and `export.spec.ts` pass unchanged.
 
-### T8 — README + copy sweep + recorded fold test
-Update the README: the "Right now it..." paragraph gains the dual export
-and stops listing PDF/imposition as a later milestone; the code map gains
-`src/export/` and `public/fonts/embed/`; the e2e list gains the export
-spec. Print and fold the sample's signature PDF once and record the result.
-Mechanically sweep every added or edited user-visible string.
+### T7 — README, copy sweep, recorded verification
+Update the README: the "Right now it..." paragraph gains save/open project,
+house-style presets, and the guided first run; the code map gains
+`src/project/` and `src/ui/firstRun/`; the e2e list gains the project spec.
+Mechanically sweep every user-visible string added in T1–T6 and this spec's
+§4.
 **AC:** README accurate against shipped behavior with verified commands; the
-physical fold of the sample reads in order and is recorded in
-`result.json`'s `summary`; the sweep over all strings added in T1–T7 and
-this spec's §4 finds no "—"/"–", no banned vocabulary, and no negative
-empty-state phrasing.
+sweep over all added strings and §4 finds no "—"/"–", no banned vocabulary,
+and no negative empty-state phrasing; a manual round-trip (save a project,
+reload, reopen) is recorded in `result.json`'s `summary`.
 
 ---
 
 ## 4. Copy (swept reference — ship these or better)
 All strings below are swept: no em/en dashes, no banned vocabulary, no
-negative phrasing. Numbers and titles are examples.
+negative empty-state phrasing.
 
-- Export button, idle: **Export**
-- Export hint (kept): **Export saves a print-ready PDF.**
-- Export button/label while typesetting: **Typesetting page 240 of 903**
-- While imposing: **Building signatures**
-- On completion, status line: **Saved two files.**
-- Fallback download links: **Save typeset PDF**, **Save signatures PDF**
-- On failure: **The export stopped before it finished. Try again.**
-- Disclosure summary: **Print setup**
-- Print-setup labels: **Sheets per signature**, **Duplex flip**
-- Duplex options: **Long edge**, **Short edge**
-- Filenames: **middlemarch-typeset.pdf**, **middlemarch-signatures.pdf**
-  (slug of the book title; `book-typeset.pdf` when the title is empty)
+- Project disclosure summary: **Project and presets**
+- Buttons: **Save project**, **Open project**, **Save house style**,
+  **Apply house style**
+- Save notices: **Saved your project.** / **Saved your house style.**
+- Project loaded (source matches or unknown): **Project loaded.**
+- House style applied: **House style applied.**
+- Mismatched source: **Settings applied. This project came from a different
+  book.**
+- Unreadable / wrong file: **This file did not load. Choose a project or
+  house style saved here.**
+- Walkthrough steps:
+  1. **Open the sample to see a real book.**
+  2. **Drag the slider to pick your sheet count.**
+  3. **Click Export to save your two PDFs.**
+- Walkthrough controls: **Next**, **Skip**
+- Filenames: **aesops-fables-project.json**,
+  **aesops-fables-housestyle.json** (slug of the book title;
+  `book-project.json` when the title is empty)
 
-Book titles, author names, and chapter titles in running heads are book
-data and exempt from the sweep; the product copy around them is not. Sweep
-before done: reject "—"/"–", the banned vocabulary list, and negative
-openers in every string added to `ControlPanel.tsx`, `Studio.tsx`, the
-export worker's error messages, `download.ts`, and the README.
+Book titles, author names, and the source filename written into a project
+file are book/user data and exempt from the vocabulary sweep; the product copy
+around them is not. Sweep before done: reject "—"/"–", the banned vocabulary
+list, and negative openers in every string added to `ProjectControls.tsx`,
+`Studio.tsx`, `firstRun/steps.ts`, `Walkthrough.tsx`, and the README.
 
 ---
 
 ## 5. Test plan (which automated test proves each criterion)
 
-### 5.1 Unit / integration (Vitest + jsdom; pdf-lib runs headless)
+### 5.1 Unit / integration (Vitest + jsdom)
 | Criterion | Test |
 |---|---|
-| px->pt and page box match the preview geometry | `geometry.test.ts` |
-| Rendered line text identical to the preview | `lineText.test.ts` snapshot vs `PageView`'s prior output |
-| Imposition folds to reading order (8-page, 16-page) | `impose.test.ts` goldens |
-| Padding to whole sheets; last signature may be shorter | `impose.test.ts` |
-| Short-edge flip transform correct | `impose.test.ts` |
-| Font resolves per face; system serif -> fallback | `fonts.test.ts` |
-| Typeset PDF page count equals the settled result | `pdf.test.ts`: load-back page count == `result.pageCount` |
-| Font is embedded and subsetted (renders without it) | `pdf.test.ts`: font descriptor has an embedded FontFile + subset tag |
-| Typeset page sizes are the trim in points per side | `pdf.test.ts` |
-| Signature PDF page count and folded-sheet size | `pdf.test.ts` |
-| Worker drives both phases; latest-wins; error voice | `client.test.ts` with a fake worker |
-| Filename slug safe and swept | `download.test.ts` |
-| Export flows through the preview without re-paginate/blank | `BookPreview.test.tsx` (fake export client) |
-| Studio bumps a request and applies print setup only | `Studio.test.tsx` |
-| Button states, print-setup controls, copy swept | `ControlPanel.test.tsx` |
-| Existing suites intact | engine, worker, budget, preview, panel, Studio, App suites unchanged |
+| Source hash stable and discriminating | `sourceId.test.ts` |
+| Import paths attach `source.sha256` | `App.test.tsx` / `sourceId` integration |
+| Project round-trips design, bounds, imposition | `projectFile.test.ts` |
+| House style round-trips with no source | `projectFile.test.ts` |
+| Bad/partial file clamps or reports, never crashes | `projectFile.test.ts` (sanitizers + `{ ok: false }`) |
+| Deterministic serialize | `projectFile.test.ts` (two saves equal) |
+| Save/open UI builds and applies settings | `ProjectControls.test.tsx` + `Studio.test.tsx` |
+| Apply re-paginates and does not re-parse or blank | `Studio.test.tsx` |
+| Mismatched source detected and reported, still applies | `Studio.test.tsx` |
+| House style applies to a **different** book | `Studio.test.tsx` (two documents) |
+| Filename slug safe and swept | `projectIo`/`download.test.ts` |
+| First-run flag round-trips, guarded | `persistFirstRun.test.ts` |
+| Walkthrough shows, advances, ends, never returns | `Walkthrough.test.tsx` / `App.test.tsx` |
+| Skip dismisses permanently | `App.test.tsx` |
+| Copy swept | `ProjectControls.test.tsx`, `firstRun` copy test |
+| Existing suites intact | engine, export, preview, panel, Studio, App suites unchanged |
 
-### 5.2 Browser harness (Playwright, Chromium) — `e2e/export.spec.ts`
+### 5.2 Browser harness (Playwright, Chromium) — `e2e/project.spec.ts`
 | Criterion | Test |
 |---|---|
-| Both PDFs generate in-browser, no upload | no-upload interception test |
-| Dual export reachable from the sample, first minute | sample export test |
-| Typeset renders without the font (embedded) | proven in `pdf.test.ts`; the sample export produces a valid, openable PDF |
-| 300k exports with progress, no freeze, no OOM | Middlemarch progress + live-surface test |
-| Print setup (sheets-per-signature, flip) works | print-setup export test |
-| Mobile 390px | Export and print-setup usable, no horizontal scroll |
-| EPIC 2/3/4/5 harnesses unaffected | the five existing specs pass unchanged |
+| Project round-trips settings and paper budget | round-trip test |
+| Mismatched source reported plainly | mismatch test |
+| House style saved and applied, re-paginates | house-style test |
+| Walkthrough walks drop→export, then never returns | walkthrough test |
+| Skip dismisses and stays dismissed | walkthrough skip test |
+| Mobile 390px | project controls + walkthrough usable, no horizontal scroll |
+| Existing harnesses unaffected | the six existing specs pass unchanged |
 
 ### 5.3 Recorded verification (part of DONE)
-Record in `result.json` `summary`: the sample's typeset and signature page
-counts, confirmation that a **physical fold of the sample's signature PDF
-reads in correct order** (the imposition acceptance criterion that cannot
-be automated), the observed export time and peak behavior for the 300k
-book (completed without freeze or OOM), and confirmation that the network
-tab showed no upload of the book during export.
+Record in `result.json` `summary`: a manual project round-trip (save a
+project from a book, reload, reopen it, settings and sheet count restored),
+confirmation that the walkthrough appears for a new visitor and never after
+the first export, and confirmation the network tab showed no upload when
+saving or opening a file.
 
 ---
 
 ## 6. Data model / migrations
 No database, no server. Storage stays forward-only:
-- `bindery.design`, `bindery.budget` — existing, untouched.
-- `bindery.print` (new, optional, `{ v: 1, imposition }`) — sheets per
-  signature and flip; readers clamp to valid whole-sheet values and a known
-  flip, and return `DEFAULT_IMPOSITION` on any error. It holds no book data.
-Engine shapes (`DesignSpec`, `Document`, `PaginationResult`, all worker
-messages) are unchanged; export consumes them read-only. New committed
-assets: the four faces' TTF/OTF under `public/fonts/embed/` plus their
-provenance, lazy-loaded on export only.
+- `bindery.design`, `bindery.budget`, `bindery.print` — existing, reused; a
+  project/house-style apply writes through their existing `save*` functions.
+- `bindery.firstRun` (new, `{ v: 1, done: true }`) — the first-run flag;
+  readers return "not done" on any error and writers never throw. Holds no
+  book data.
+- `Document.source` gains optional `sha256` (in-memory only; not persisted to
+  storage). No other engine or model shape changes.
+- **Files (not storage):** the project file
+  `{ kind, version, source: {name, sha256, byteLength}, design, bounds,
+  imposition }` and the house-style file
+  `{ kind, version, design, bounds, imposition }` are downloads/uploads
+  under the user's control. A `version` mismatch is tolerated: the sanitizers
+  absorb shape drift, so an older or newer file still loads to a layable
+  design.
 
 ---
 
 ## 7. QUALITY BAR mapping (binding; budget from the start)
-- **§1 Perceived speed / differentiator:** export runs in a worker with
-  streamed progress, so the studio and the paper-budget slider stay live;
-  the 300k export completes without freezing the UI or running out of
-  memory; the file reproduces the preview exactly (page count and
-  geometry), keeping the trust the re-flow earns. Asserted in e2e and unit.
-- **§2 Mobile-first:** Export and print-setup usable at 390px, ~44px
-  targets, no horizontal scroll; asserted in e2e.
-- **§3 Designed states:** the button has a designed idle, a progress label
-  that names the phase and page, and an error state that says what to do
-  next; the preview never blanks during export.
-- **§4 First-run:** the sample exports two valid PDFs with no user file,
-  reachable in the first minute (e2e-proven). The EPIC 7 guided walkthrough
-  is out of scope.
-- **§5 Security hygiene:** no server, no new outbound path, no book bytes in
-  any request; inputs are a bounded select and a two-way toggle; storage
-  guarded; no book text or PII in logs, messages, or errors.
-- **§6 Accessibility:** labeled Export button with `aria-busy`, one polite
-  progress region, labeled print-setup inputs in a fieldset, keyboard reach
-  and visible focus everywhere.
+- **§1 Perceived speed / differentiator:** the hash runs once at import off
+  the hot path; applying a project or house style uses the existing live
+  re-flow and never adds a second layout pass or blocks the studio; restore
+  is exact, so the trust the re-flow earns is preserved.
+- **§2 Mobile-first:** project controls and the walkthrough are usable at
+  390px with ~44px targets and no horizontal scroll; asserted in e2e.
+- **§3 Designed states:** save/open results speak in the product voice
+  through one polite notice line; a bad file gets a plain "what to do next"
+  message, never a stack trace; the walkthrough is a designed guided surface,
+  not a blank overlay.
+- **§4 First-run:** the guided walkthrough leads a brand-new user from opening
+  the sample to a first export in three anchored steps, skippable, shown only
+  until the first export, gone forever after (the persisted flag). This is the
+  clause this EPIC most directly delivers.
+- **§5 Security hygiene:** no server, no new outbound path, no book bytes or
+  files in any request; every opened file validated and clamped at the
+  boundary; storage guarded; no book text or PII in logs, messages, or errors.
+- **§6 Accessibility:** labeled buttons and inputs; one polite notice region;
+  the walkthrough is non-modal, keyboard-reachable, and never traps focus or
+  covers its target; visible focus everywhere.
 - **§7 Radically simple interface:** Export stays the single primary action;
-  print setup hides behind one disclosure with sensible defaults, so the
-  common path is one click.
-- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and a
-  T8 gate.
-- **§9 README:** updated truthfully for dual export; commands verified; no
-  pipeline jargon.
+  project and preset actions hide behind one subordinate disclosure; the
+  walkthrough points one short step at a time and gets out of the way.
+- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and a T7
+  gate.
+- **§9 README:** updated truthfully for save/open, presets, and first run;
+  commands verified; no pipeline jargon.
 
-Reconciliation: the two PDFs, the imposition math, the worker, and their
-tests are the scoped work, and meeting the bar on them is in scope. Cover
-math, other formats, and cloud storage stay out however tempting; if
-meeting the bar ever appeared to require one of them, that is a `blocked`,
-not a quiet expansion.
+Reconciliation: the project/house-style files, the source hash, the guided
+run, and their tests are the scoped work, and meeting the bar on them is in
+scope. Preset sharing, cloud sync, and version history stay out however
+tempting; if meeting the bar ever appeared to require one of them, that is a
+`blocked`, not a quiet expansion.
 
 ---
 
 ## 8. Definition of done
-- All eight tasks' ACs met; `lint`, `typecheck`, `test`, and all six
-  Playwright specs green (`export.spec.ts` new; the other five unchanged).
-- One Export click produces a typeset PDF and a signature PDF entirely in
-  the browser, with no upload of the book (network tab confirms).
-- The typeset PDF embeds the book's face (subset) and renders on a machine
-  lacking the font; its page count and page geometry match the preview for
-  the same settings.
-- The signature PDF's sheets fold into correct reading order: the automated
-  8-page and 16-page goldens hold and a physical fold of the sample reads in
-  order (recorded per §5.3).
-- Exporting the 300k-word book shows progress, keeps the UI interactive,
-  and completes without an out-of-memory failure.
-- Print setup (sheets-per-signature, duplex flip) changes the imposition
-  only; it never re-flows the book or moves the design.
-- A session that never exports is behaviorally identical to EPIC 5: default
-  path, budgets, determinism, and golden page counts unchanged.
+- All seven tasks' ACs met; `lint`, `typecheck`, `test`, and all seven
+  Playwright specs green (`project.spec.ts` new; the other six unchanged).
+- A project file round-trips: reopening the same book restores the exact
+  design, bounds, and print setup, and the preview re-paginates to the same
+  page and sheet count.
+- A project opened against a different book reports the mismatch plainly and
+  still applies its settings.
+- A house style saved from one book applies cleanly to a different book and
+  re-paginates (proven across two documents).
+- The walkthrough is three one-sentence imperative steps anchored to real
+  controls, skippable at any step, shown only until the first export, and
+  never shown to a returning user with the persisted flag.
+- Every user-visible string added is swept: no em/en dashes, no banned
+  vocabulary, no negative empty-state phrasing.
+- A session that never saves, opens, or runs the tour is behaviorally
+  identical to the prior EPIC: default path, budgets, determinism, export,
+  and golden page counts unchanged.
 
 ### Planner AC -> coverage
-1. *Both PDFs generate entirely in the browser with no upload (network tab)*
-   -> §2.7 worker build, §2.10 no outbound path; T4, T5, T7 no-upload test;
-   §5.2 row 1.
-2. *Fonts are embedded: the typeset PDF renders on a machine lacking the
-   font* -> §2.4 embedding + subset, system-serif fallback; T2, T3
-   embedded-font assertion; §5.1 embedded-font row.
-3. *Imposed signatures fold into correct reading order, verified against
-   known 8-page and 16-page orderings and a physical fold of the sample* ->
-   §2.6 arithmetic and goldens; T1 golden tests; T8 recorded physical fold;
-   §5.1 imposition rows, §5.3.
-4. *The typeset PDF page count matches the on-screen preview for the same
-   settings* -> §2.5 one page per `Page`; T3 load-back count == `pageCount`;
-   §5.1 page-count row.
-5. *Exporting the 300k book shows progress, does not freeze the UI, and
-   completes without an out-of-memory failure* -> §2.7 worker + memory
-   measures, §2.8 progress; T7 300k test; §5.2 row, §5.3.
-</content>
-</invoke>
+1. *A project file round-trips: reopening restores the exact settings and
+   paper budget; a mismatched source is detected and reported plainly.* ->
+   §2.3 hash, §2.4 build/parse/apply; T1, T2, T3; §5.1 round-trip + mismatch
+   rows; §5.2 round-trip + mismatch tests; §5.3.
+2. *A house style saved from one book applies cleanly to a different book and
+   re-paginates.* -> §2.4 house-style file + `applySettings`; T2, T3
+   two-document test; §5.1 different-book row; §5.2 house-style test.
+3. *The walkthrough is 2 to 4 one-sentence imperative steps anchored to real
+   controls, skippable at any step, and shown only until first export; a
+   returning user with the persisted flag never sees it.* -> §2.6 controller,
+   steps, anchors, persistence; T4; §5.1 walkthrough + skip rows; §5.2
+   walkthrough tests.
+4. *Example step copy is plain and positive, swept for banned tells and
+   em-dashes.* -> §4 swept copy; T3/T4 copy-sweep tests; T7 final sweep.
