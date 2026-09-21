@@ -61,7 +61,9 @@ test("a project round-trips the changed dial and the sheet count", async ({ page
   await page.locator('input[aria-label="Open project file"]').setInputFiles(path);
   await expect(page.getByText("Project loaded.")).toBeVisible();
   await expect(page.locator("#font-size")).toHaveValue("16");
-  expect(await readoutSheets(page)).toBe(sheets);
+  // Poll past the re-flow: the readout briefly shows the reset count before the
+  // restored design settles back to the saved sheet count.
+  await expect.poll(() => readoutSheets(page), { timeout: 30_000 }).toBe(sheets);
 });
 
 test("a mismatched source is reported plainly and still applies", async ({ page }) => {
@@ -183,7 +185,9 @@ test("project controls and the walkthrough are usable at 390px", async ({ page }
 
   await openProjectDisclosure(page);
   for (const name of ["Save project", "Open project", "Save house style", "Apply house style"]) {
-    const button = page.getByRole("button", { name });
+    // exact:true so "Open project" does not also match the "Open project file"
+    // hidden input, which the accessibility tree exposes as a button.
+    const button = page.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
     expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   }
