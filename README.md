@@ -135,7 +135,7 @@ public/sample/   the bundled public-domain sample EPUB
 public/fonts/    the curated woff2 book faces, their license, and provenance
 public/fonts/embed/  TTF faces the exporter subsets and embeds, loaded only on export
 docker/          nginx config and the startup script that generates /config.js
-e2e/             Playwright specs: import, pagination, preview, typography, budget, export, project
+e2e/             Playwright specs: import, pagination, preview, typography, budget, export, project, first render, mobile, keyboard
 ```
 
 The dials write a plain `DesignSpec`; every change re-paginates in the worker
