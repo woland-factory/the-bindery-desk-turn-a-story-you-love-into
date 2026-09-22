@@ -1,27 +1,24 @@
-# EPIC SPEC — Project file, house-style presets, and guided first run
+# EPIC SPEC — Polish (final, no new features)
 
-> The final feature EPIC of The Bindery Desk. The engine (streamed
-> pagination), the facing-page preview, the typography dials, the
-> paper-budget slider and solver, and the dual PDF export all ship already.
-> This EPIC makes the binder's work **durable and repeatable**, and it walks
-> a brand-new visitor through their first book once:
+> The last EPIC of The Bindery Desk. Everything ships already: EPUB
+> ingest, the worker pagination engine, the virtualized facing-page
+> preview, the typography dials, the paper-budget slider and solver, the
+> dual PDF export, project/house-style files, and the guided first run.
 >
-> - **Save/open a project file** (durability layer 2): a local JSON file
->   that references the source book and captures every setting, so reopening
->   the same book restores the exact design and paper budget.
-> - **Save/apply a house-style preset** (durability layer 3): a
->   settings-only JSON file with no source, so book #12 can inherit the look
->   of books #1 through #11 in one click and re-paginate.
-> - **A guided first run**: a short, skippable walkthrough anchored to the
->   real controls that leads a new user from opening a book to exporting it
->   once, then never appears again.
+> This EPIC ships **no features and no new controls.** It is a UX,
+> performance, accessibility, and copy pass that measures the whole
+> product against the QUALITY BAR and the quality differentiator, records
+> the numbers, fixes any defect the audit turns up, and finalizes the
+> stranger-facing README. Every task below is **audit → record → fix any
+> defect found → prove it with an automated test.** When a surface already
+> clears the bar, the deliverable is the recorded measurement and the
+> permanent test that locks it in, not a change for its own sake.
 >
-> This EPIC adds **no new typography or budget controls**, no cloud sync, no
-> account, no server, no preset sharing service, and no version history
-> beyond the single project file. It does not change `DEFAULT_DESIGN`, the
-> dial set, the pagination engine, the export path, or the engine's output
-> shape. Everything stays entirely in the browser; project and preset files
-> are ordinary downloads the user opens back from their own disk.
+> Because "tighten what exists" is the whole scope, the biggest risk here
+> is drift: adding a dial, a setting, an animation, or an abstraction
+> nobody asked for. Do not. If the audit reveals something that needs a
+> real feature or a re-architecture to fix, that is `blocked` or a
+> `requested_task`, never a quiet expansion.
 
 ---
 
@@ -30,524 +27,436 @@
 **Live responsiveness of the whole-book re-flow.** Any control, above all
 the paper-budget slider, re-flows the entire book with perceptible feedback
 under 100ms and a settled result within about two seconds on a 300k-word
-novel. We make control immediate and reversible in a way no free path (Word,
-Calibre, Reedsy) offers.
+novel. We do not out-feature InDesign. We make control immediate and
+reversible in a way no free path (Word, Calibre, Reedsy) offers.
 
-**What it demands of THIS EPIC:** this EPIC does not run the re-flow, but it
-sits on top of the trust the re-flow earns and must not spend it.
-
-- **Restore is exact.** Reopening a project restores the same `DesignSpec`,
-  the same solver bounds, and the same print setup, so the deterministic
-  engine lays out the byte-identical book the binder saved. "It came back
-  the same" is the whole promise of durability layer 2.
-- **Apply re-flows, and only that.** Opening a project or applying a house
-  style changes the design and lets the existing live re-flow do its job. It
-  never runs a second layout path, never re-parses, and never blocks the
-  studio. The guided walkthrough points at the live controls; it never
-  stands in front of them or freezes the surface it is teaching.
-
-Restore fidelity and a live surface are both in scope from the start.
+**What it demands of THIS EPIC:** the polish pass must *prove* the
+differentiator with recorded numbers on the real 300k-word file, and it
+must not spend a millisecond of that budget. Every tightening here (a copy
+fix, a focus ring, a mobile reflow of a control column) is layout and text
+only. Nothing this EPIC touches may add work to the hot re-flow path,
+recreate the worker, block the main thread, or blank the mounted book
+during a pass. If a polish change and the re-flow budget ever conflict, the
+budget wins and the change is dropped.
 
 ---
 
 ## 1. Scope
 
 ### In scope
-1. **Project file (open + save).** A local JSON file
-   `{ kind, version, source: {name, sha256, byteLength}, design, bounds,
-   imposition }`. Saving downloads it; opening reads it back and applies the
-   settings to the loaded book. The source is referenced by a content hash,
-   never by its bytes: the book is never inside the file.
-2. **Exact round-trip.** Save a project from a book, reload the book, open
-   the project: the design dials, the solver bounds, and the print setup are
-   restored exactly, and the preview re-paginates to the same page and sheet
-   count. Proven in unit tests and e2e.
-3. **Mismatched-source detection.** When the opened project's `source.sha256`
-   differs from the currently loaded book's hash, the app reports it plainly
-   in the product's voice and still applies the settings (settings are
-   book-agnostic). A matching hash applies silently.
-4. **House-style preset (open + save).** A settings-only JSON file
-   `{ kind, version, design, bounds, imposition }` with **no source**.
-   Applying it to a different book sets the design and re-paginates. Proven
-   across two distinct books in unit tests.
-5. **Guided first run.** A skippable walkthrough of **three** one-sentence
-   imperative steps anchored to real controls: open a book (the sample),
-   drag the paper-budget slider, click Export. It advances as the user does
-   the real action, is skippable at any step, and is dismissed permanently
-   on the first successful export or on Skip. A persisted flag means a
-   returning user never sees it.
-6. **Robust, forward-only file reading.** Every opened file is validated at
-   the boundary and every value is clamped through the **existing**
-   sanitizers (`sanitizeDesign`, `sanitizeBounds`, `sanitizeImposition`), so
-   a partial, out-of-range, or hand-edited file still yields a layable design
-   or a plain error, never a crash.
-7. **No upload, ever.** Saving is a browser download; opening reads a local
-   file the user picks (same pattern as EPUB import). No project or preset
-   file, and no book byte, is ever sent anywhere. Consistent with the hard
-   community privacy norm.
-8. **Mobile-first, accessible, swept.** The project/preset controls and the
-   walkthrough are usable at 390px with ~44px targets and no horizontal
-   scroll; every control labeled; notices in a polite live region; the
-   walkthrough is non-modal and keyboard-reachable and never traps focus or
-   blocks the control it points at. All copy swept.
+1. **Recorded performance measurement** of the three budgets on real
+   files: first meaningful render under ~1s, interaction feedback under
+   100ms, and the slider re-flow budget (first feedback ≤100ms, settle
+   ≤~2s) on the committed 300k-word novel. The numbers are captured by
+   automated tests and copied into `result.json`.
+2. **A 390px pass over every surface** the product renders: the import
+   dropzone (empty), the loading skeleton, all three error states, the
+   structure view, and the full studio (paper-budget slider + bounds,
+   control panel + print setup, project/preset disclosure, facing-page
+   preview, and the first-run coach-mark). Every feature reachable, no
+   horizontal scroll, ~44px touch targets, text readable without zoom.
+3. **An accessibility pass** across the same surfaces: sufficient color
+   contrast in both light and dark themes, a visible focus ring on every
+   interactive element, every input labeled, semantic headings and
+   landmarks, keyboard reach to everything a pointer can do, and alt text
+   (or a correct `aria-hidden`) on every meaningful image or glyph.
+4. **A single, comprehensive copy sweep** over every user-visible string
+   in the product (all UI components, the app shell, and the README) for
+   em-dashes and en-dashes, the banned LLM vocabulary, and negative
+   empty-state phrasing. The sweep is a permanent automated test, not a
+   one-time read.
+5. **A finalized, stranger-facing README**: what the app is (plain
+   language), how to run it (commands verified against the actual
+   `Dockerfile` and compose file), how to test it, and where the code
+   lives. No factory or pipeline jargon.
+6. **Confirm the designed empty/loading/error states everywhere**, and
+   close the one designed-states gap the audit found: there is **no
+   app-level error boundary**, so an unexpected runtime throw in a surface
+   would show a broken/blank React tree instead of a designed error
+   screen. Add a minimal error boundary whose fallback reuses the existing
+   error styling and product voice with a recovery action. This renders no
+   new feature and no new user-facing surface beyond a fallback that only
+   appears on an otherwise-unhandled crash. QUALITY BAR §3 requires it
+   ("never a raw stack trace, error code, or dead end").
+7. **Fixes for any defect the audit surfaces**, kept to the smallest
+   change that clears the bar: a missing label, an overflow at 390px, a
+   weak-contrast token, a stray em-dash, a stale README line. Layout, ARIA,
+   CSS, copy, a small error-boundary fallback, and tests only.
 
 ### Out of scope (Non-Goals — building any is a defect)
-- **A preset sharing service or marketplace.** No upload of presets, no
-  gallery, no import-by-URL, no discovery surface. Files are local only.
-- **Cloud sync or account-based storage.** No account, no login, no server,
-  no remote save, no cross-device sync. There is no backend.
-- **Version history beyond the single project file.** No autosave timeline,
-  no undo stack persisted to disk, no multiple named snapshots inside the
-  app. One project file is the unit of durability.
-- **New typography or budget controls.** This EPIC saves and restores the
-  existing settings; it never adds a dial, a bound, or a budget lever.
-- **Changing the engine, the export path, or their output shapes.**
-  `DesignSpec`, `Document`, `PaginationResult`, all worker messages, and the
-  export modules are consumed read-only (the one additive change is an
-  optional `sha256` on `Document.source`, §2.3).
-- **Storing book bytes or book text in any file.** A project file holds
-  settings plus a source *reference* (name, hash, byte length) only.
-- **Editing the story, re-parsing, or a runtime LLM.** No network path
-  beyond same-origin app assets.
-- **An in-app file browser or picker beyond the browser's own.** Saving uses
-  a download; opening uses a native file input.
+- **Any new feature, dial, control, setting, budget lever, or preset.**
+  This EPIC saves nothing new and renders no new surface.
+- **Re-architecting the engine, the preview virtualization, the solver,
+  the export path, or any of their output shapes.** They are consumed
+  read-only. Their `.ts`/`.tsx` logic is not restructured.
+- **New runtime dependencies or a design system.** No component library,
+  no CSS framework, no animation library, no icon set. Test-only dev
+  helpers are allowed (see §2.1); a runtime dependency is not.
+- **Gold-plating past the written bar:** animations nobody specified,
+  theming controls, a settings screen, motion polish, speculative
+  micro-optimizations of an engine that already meets budget.
+- **Behavioral change to any shipped flow.** Import, pagination, the
+  slider solve, dial edits, export, project/house-style round-trips, and
+  the walkthrough all behave exactly as they do today. A user who never
+  hits a fixed defect sees an identical product.
+- **Anything already excluded by the product plan:** covers/3D preview,
+  accounts/cloud/sync/server, a preset marketplace, InDesign-grade
+  microtypography, story editing, non-EPUB inputs, a runtime LLM,
+  multi-book sessions.
 
 ---
 
 ## 2. Technical design
 
-### 2.1 What already exists (consume; change only where named)
-- `src/engine/types.ts` — `DesignSpec`, `PaginationResult`. **Unchanged.**
-- `src/model/document.ts` — `Document.source` is `{ name, byteLength }`.
-  **Gains** an optional `sha256?: string` (§2.3); no other change.
-- `src/ui/design/persistDesign.ts` — `sanitizeDesign(raw): DesignSpec`,
-  `loadDesign`, `saveDesign`, key `bindery.design`. **Reused unchanged**;
-  `sanitizeDesign` validates the `design` field of any opened file.
-- `src/ui/budget/persistBudget.ts` — `sanitizeBounds(raw): BudgetBounds`,
-  `loadBounds`, `saveBounds`, key `bindery.budget`. **Reused unchanged.**
-- `src/export/persistPrint.ts` — `sanitizeImposition(raw): ImpositionOptions`,
-  `loadImposition`, `saveImposition`, key `bindery.print`. **Reused
-  unchanged.**
-- `src/export/impose.ts` — `ImpositionOptions`, `DEFAULT_IMPOSITION`.
-  **Unchanged**; the project/house-style files carry an `ImpositionOptions`.
-- `src/export/download.ts` — `saveBytes(bytes, filename)` and the filename
-  slug helper. **Reused/extended** with a text saver and a generic filename
-  helper for `-project.json` / `-housestyle.json` (§2.5); the export
-  filenames stay exactly as they are.
-- `src/App.tsx` — owns `empty | loading | ready | error`, the import paths
-  (`onFile`, `onOpenSample` via `runImport`), and the file input. **Gains**
-  the source-hash step at import (§2.3) and the first-run controller plus the
-  `Walkthrough` overlay (§2.6).
-- `src/ui/Studio.tsx` — owns the working `design`, `bounds`, `imposition`,
-  `budgetBase`, the export request, and persistence. **Gains** an
-  `applySettings` path used by open-project and apply-house-style, a
-  mismatch/notice state, the `ProjectControls` surface, an `onExportDone`
-  signal for the tour, and `data-tour` anchors (§2.4, §2.6).
-- `src/ui/ImportSurface.tsx` — the empty-state dropzone with the sample
-  button. **Gains** a `data-tour="sample"` attribute on the sample button.
-- `src/ui/ControlPanel.tsx` — holds the Export button. **Gains** a
-  `data-tour="export"` attribute on that button.
-- `src/ui/budget/BudgetSlider.tsx` — the range input. **Gains** a
-  `data-tour="slider"` attribute on the slider input.
+The product is a fully client-side React + TypeScript SPA built with Vite,
+tested with Vitest + Testing Library (jsdom) and Playwright (Chromium,
+against the production build). There is no server and no endpoint; "every
+screen" means every rendered surface. All work here is measurement, tests,
+CSS, ARIA, copy, and README.
 
-### 2.2 New file / module layout
-```
-src/project/
-  sourceId.ts        async sourceId(bytes: Uint8Array): Promise<string>
-                     SHA-256 hex via crypto.subtle. Pure over its input,
-                     no DOM, no network. Computed once per import (§2.3).
-  sourceId.test.ts
-  projectFile.ts     the file model + serialize/parse (§2.4):
-                       ProjectFile, HouseStyle, LoadedSettings types;
-                       buildProject(source, design, bounds, imposition),
-                       buildHouseStyle(design, bounds, imposition),
-                       readSettingsFile(text): LoadedSettings | LoadError.
-                     Parsing reuses the three existing sanitizers.
-  projectFile.test.ts
-  projectIo.ts       main-thread IO: saveProject / saveHouseStyle (JSON ->
-                     Blob -> download, via download.ts) and readFileText(file).
-  projectIo.test.ts
-src/ui/ProjectControls.tsx        the subordinate save/open surface (§2.4)
-src/ui/ProjectControls.test.tsx
-src/ui/firstRun/
-  persistFirstRun.ts   isFirstRunDone(): boolean, markFirstRunDone(): void
-                       over key `bindery.firstRun`; every touch guarded.
-  persistFirstRun.test.ts
-  Walkthrough.tsx      the non-modal coach-mark overlay (§2.6)
-  Walkthrough.test.tsx
-  steps.ts             TOUR_STEPS: the three anchored step copies (one place
-                       to sweep). Pure data.
-src/model/document.ts               + optional source.sha256
-src/App.tsx                         + import hash, first-run controller, overlay
-src/ui/Studio.tsx                   + applySettings, notice, ProjectControls, tour hooks
-src/ui/ImportSurface.tsx            + data-tour="sample"
-src/ui/ControlPanel.tsx             + data-tour="export"
-src/ui/budget/BudgetSlider.tsx      + data-tour="slider"
-src/export/download.ts              + generic text saver + filename helper (reuse slug)
-src/styles.css                      project controls + coach-mark + 390px
-e2e/project.spec.ts                 round-trip, house style, walkthrough, mobile
-```
-No new runtime dependency. `crypto.subtle` and the DOM download path are
-platform APIs already available.
+### 2.1 What this EPIC may and may not touch
+- **May edit:** `src/styles.css` (contrast tokens, 390px reflow, focus,
+  touch targets), user-visible strings in the surfaces listed in §2.2,
+  `README.md`, and test files (new and existing). May add small **test-only**
+  helper modules and, if wanted for the a11y audit, a **dev-dependency**
+  test tool (e.g. `@axe-core/playwright`) used only in e2e — never shipped
+  in the bundle. Contrast is proven dependency-free (§2.5), so axe is
+  optional, not required.
+- **May NOT edit for behavior:** the engine (`src/engine/*`), the EPUB
+  parser (`src/epub/*`), the export pipeline (`src/export/*` logic), the
+  solver, the model, or the worker protocols. A copy fix inside one of
+  these modules' *user-visible strings* is allowed; a logic change is not.
+- **No new files under `src/` that render new UI.** New files are limited
+  to tests and (optionally) a pure test helper.
 
-### 2.3 Source identity (`src/project/sourceId.ts`, `Document.source.sha256`)
-A project file must be able to tell "is this the same book I saved from?"
-without holding the book. The honest, cheap identity is a content hash.
+### 2.2 The surface inventory (the concrete "every screen")
+Each row is a surface the audit must cover. File paths are where its
+strings and structure live.
 
-- `sourceId(bytes)` returns the lowercase hex SHA-256 of the EPUB bytes via
-  `crypto.subtle.digest("SHA-256", bytes)`. It is pure over its input and
-  runs **once per import**, at the import boundary, off the hot re-flow path.
-  A 64MB digest costs well under the perceived-speed budget and never touches
-  a paginate.
-- `Document.source` gains `sha256?: string` (optional, forward-compatible).
-  The EPUB parser (`parseEpub`) stays pure and synchronous and does **not**
-  compute the hash. Instead each import path attaches it after parsing, where
-  the bytes are in hand:
-  - `App.onFile`: hash the `Uint8Array` it already builds and set
-    `document.source.sha256` before moving to `ready`.
-  - `sample/loadSample.ts`: hash the fetched sample bytes and set
-    `document.source.sha256` on the returned document.
-- If `crypto.subtle` is somehow unavailable, `sha256` stays undefined; the
-  app still works and a project simply cannot assert a match (treated as
-  "unknown", applied without a mismatch notice). This never crashes an
-  import.
+| Surface | Component(s) | States to cover |
+|---|---|---|
+| App shell / header | `src/App.tsx` | header title + `▤` mark (decorative), skip-to-main if present, the hidden file input's label |
+| Empty / import | `src/ui/ImportSurface.tsx` | dropzone idle + drag-active |
+| Loading | `src/ui/LoadingState.tsx` | skeleton, named file vs. sample |
+| Error | `src/ui/ErrorState.tsx` | `unreadable`, `too-large`, `sample-failed` |
+| Structure | `src/ui/StructureView.tsx` | title, byline, import report disclosure, chapter list |
+| Paper budget | `src/ui/budget/BudgetSlider.tsx` | slider, readout (all `Readout` kinds), bounds disclosure |
+| Control panel | `src/ui/ControlPanel.tsx` | dials, export button (idle/running/done/error), print-setup disclosure, reset |
+| Project / presets | `src/ui/ProjectControls.tsx` | four buttons, notice line, hidden inputs |
+| Preview | `src/ui/BookPreview.tsx`, `src/ui/Spread.tsx`, `src/ui/PageView.tsx` | `laying-out`, `first-spread`, `ready`, `empty`, `error` |
+| Guided first run | `src/ui/firstRun/Walkthrough.tsx`, `steps.ts` | floating card, docked mobile card, ring |
 
-**No PII / no book text.** The hash and byte length are not book text. The
-source `name` is the user's own filename, kept in memory and written only
-into a project file the user saves to their own disk; it is never
-transmitted and never logged.
+### 2.3 Performance measurement (audit criterion A)
+Two of the three budgets already have harnesses; one does not. Reuse what
+exists, add the missing one, and record all three.
 
-### 2.4 File model and controls (`projectFile.ts`, `ProjectControls.tsx`)
+- **First meaningful render (< ~1s) — NEW.** Add a Playwright measurement
+  (e.g. `e2e/firstrender.spec.ts`) that navigates to `/` on the production
+  build and measures the time from navigation start until the first real
+  content is painted, using both the empty-state heading becoming visible
+  (`getByRole("heading", { name: "Open a book to begin" })`) and the
+  browser's `first-contentful-paint` paint entry. Assert both are under
+  1000ms and `console.log` the measured values for capture. The app already
+  ships a static shell and yields a frame before the synchronous parse
+  (`App.runImport`), so this should pass; the deliverable is the recorded
+  number and the regression guard.
+- **Interaction feedback (< 100ms).** The differentiator's re-flow feedback
+  is already measured by `__BINDERY_ENGINE_TIMINGS__.firstFeedbackMs` in
+  `e2e/pagination.spec.ts` and `e2e/budget.spec.ts` (asserted ≤100ms).
+  Extend the audit to record that a **dial** change (not only the slider)
+  gives feedback within 100ms without blanking: after a settled book,
+  change a dial and assert the preview keeps a page-leaf mounted and shows
+  the `Reflowing` marker / `aria-busy` on `.book` within 100ms, and that
+  no `.leaf--skeleton` appears. Non-re-flow presses (buttons, disclosures)
+  are covered by the CSS pressed state (`.btn:active` transform,
+  `aria-busy` on export) — assert the pressed affordance exists.
+- **Slider re-flow budget (300k).** Already proven by
+  `e2e/budget.spec.ts` ("re-flows the 300k book within budget and lands
+  within one sheet") and `e2e/pagination.spec.ts` (Middlemarch,
+  `firstFeedbackMs ≤ 100`, `settleMs ≤ 2000`). Do not weaken these.
+  Capture their `console.log` numbers into the run summary.
 
-**Types.**
-```ts
-const PROJECT_KIND = "bindery-project";
-const HOUSESTYLE_KIND = "bindery-housestyle";
-const FILE_VERSION = 1;
+**Recording.** The implementer's `result.json` `summary` (and, if useful, a
+committed `PERF.md` or a report artifact) must state the measured
+`firstFeedbackMs`, `settleMs`, `pageCount`, and `wordCount` for Emma
+(~150k) and Middlemarch (~300k), plus the measured first-render ms. "Numbers
+recorded" is the acceptance criterion; a green boolean is not enough.
 
-interface SourceRef { name: string; sha256?: string; byteLength: number }
+### 2.4 390px mobile pass (audit criterion B)
+Add one Playwright spec (e.g. `e2e/mobile.spec.ts`) that, at a 390×780
+viewport, walks every surface in §2.2 and asserts for each:
+- `document.documentElement.scrollWidth <= clientWidth` (no horizontal
+  scroll) — the load-bearing check, run on: the empty screen, the error
+  screen (force `unreadable` by importing a non-EPUB blob), the structure
+  view + studio after opening the sample, with the bounds and print-setup
+  disclosures open, and with the first-run card showing.
+- The surface's primary control is visible and its touch target height is
+  `>= 44` (Choose-EPUB button, Export button, slider thumb row, project
+  buttons, walkthrough Skip/Next).
+- Body text computed `font-size` is `>= 16px` (readable without zoom); the
+  base is 17px, so this guards against a regression.
 
-interface ProjectFile {
-  kind: typeof PROJECT_KIND;
-  version: number;
-  source: SourceRef;
-  design: DesignSpec;
-  bounds: BudgetBounds;
-  imposition: ImpositionOptions;
-}
-interface HouseStyle {
-  kind: typeof HOUSESTYLE_KIND;
-  version: number;
-  design: DesignSpec;
-  bounds: BudgetBounds;
-  imposition: ImpositionOptions;
-}
+Existing 390px assertions in `e2e/budget.spec.ts` and `e2e/project.spec.ts`
+stay and are not duplicated; the new spec fills the surfaces they skip
+(empty, loading, error, structure, control panel, preview). The single-page
+preview mode below `BREAKPOINT_PX` (820) means the phone shows one page,
+which the audit confirms fits with no overflow. Fix any overflow found with
+a CSS-only change (wrap, `min-width: 0`, `overflow-wrap`), never by removing
+a feature.
 
-// What the UI applies, regardless of which file kind was opened.
-interface LoadedSettings {
-  ok: true;
-  origin: "project" | "housestyle";
-  design: DesignSpec;
-  bounds: BudgetBounds;
-  imposition: ImpositionOptions;
-  source?: SourceRef;            // present only for a project file
-}
-interface LoadError { ok: false }
-```
+### 2.5 Accessibility pass (audit criterion C)
+Prove each a11y property with a targeted automated check; fix any miss.
 
-**Why design + bounds + imposition (and not a stored slider target).** The
-paper-budget *target* the user drags to is transient: the solver bakes its
-result into the `DesignSpec` (font size, leading, margins). Restoring the
-design therefore restores the byte-identical solved book; restoring the
-`bounds` restores the solver's rails ("the paper budget"). A separately
-stored target would force a re-solve on open for no fidelity gain, so it is
-intentionally not stored. This satisfies "restores the exact settings and
-paper budget": design + bounds + imposition fully determine the pages.
+- **Contrast — dependency-free unit test.** Add `src/theme/contrast.test.ts`
+  with a small pure `contrastRatio(hex, hex)` helper (WCAG relative
+  luminance; test-only, may live beside the test). Read the theme tokens
+  from `:root` and the `prefers-color-scheme: dark` block in
+  `src/styles.css` (import the hex values as a small typed map in the test,
+  or parse the file) and assert, for **both** light and dark:
+  - body text `--ink` on `--bg` and on `--surface` ≥ 4.5:1,
+  - secondary text `--ink-soft` on `--surface` and on `--bg` ≥ 4.5:1,
+  - primary button `--accent-ink` on `--accent` ≥ 4.5:1,
+  - link/accent text `--accent` on `--surface` ≥ 4.5:1 (or ≥ 3:1 where it
+    is only used as a large/bold ≥ 18.66px UI label, stated per token),
+  - focus ring `--focus` on `--surface` ≥ 3:1.
+  If a token fails, adjust that token (darker/lighter) until it passes;
+  this is the only sanctioned `styles.css` color change and must keep the
+  warm paper aesthetic.
+- **Focus visible.** `styles.css` already sets `:focus-visible { outline:
+  3px solid var(--focus); outline-offset: 2px }`. Add an e2e keyboard walk
+  that tabs through the studio and asserts the active element has a visible
+  outline (non-`none` computed `outline-style` / width) on each stop, and
+  that every interactive element (buttons, selects, number inputs,
+  checkboxes, slider, disclosures, download links) is reachable by Tab in a
+  sensible order.
+- **Labels.** Every input already has an associated `<label htmlFor>` or
+  `aria-label` (verified by reading the components). Add a jsdom test that
+  renders the studio with a stub engine and asserts `getByLabelText` finds
+  every control by its visible label, and that the hidden EPUB and
+  project/preset file inputs expose an `aria-label`.
+- **Semantics & landmarks.** Assert one `<main id="main">`, exactly one
+  `<h1>` per rendered screen (`Open a book to begin` on empty; the book
+  title on the studio), `role="alert"` on the error surfaces,
+  `aria-live="polite"` on the loading, readout, export status, page-count,
+  and project-notice regions, and that the decorative `▤` mark and skeleton
+  carry `aria-hidden`. Consider adding a "Skip to content" link targeting
+  `#main` if keyboard users cannot bypass the header; only add it if the
+  audit shows a real gap (the header is a single line, so this may be
+  unnecessary — decide by the keyboard walk, do not add speculatively).
+- **Alt text / meaningful images.** The product renders no `<img>` in its
+  chrome (book pages are positioned text, fonts are CSS). Confirm this in
+  the audit and record it; the only glyph is the decorative header mark,
+  which is correctly `aria-hidden`. If a meaningful image is found, give it
+  real `alt`.
 
-**Serialize.** `buildProject(source, design, bounds, imposition)` and
-`buildHouseStyle(design, bounds, imposition)` return the literal objects
-above with the constant `kind` and `version`. No `Date.now`, no randomness,
-so two saves of the same state are byte-identical (determinism).
+### 2.6 Copy sweep (audit criterion D)
+Replace the scattered per-component sweeps' *coverage gaps* with one
+comprehensive, permanent test (e.g. `src/copy.sweep.test.tsx`). Existing
+per-component sweeps (in `BudgetSlider.test.tsx`, `ControlPanel.test.tsx`,
+`BookPreview.test.tsx`, `ProjectControls.test.tsx`, `Studio.test.tsx`,
+`firstRun/Walkthrough.test.tsx`, `export/*`) may stay; the new test closes
+the surfaces that currently have **no** sweep: `ImportSurface`,
+`LoadingState`, `ErrorState` (all three kinds), `StructureView`, and the
+`App` shell.
 
-**Parse (`readSettingsFile(text)`).**
-1. `JSON.parse` inside try/catch. On throw → `{ ok: false }`.
-2. Read `kind`. `PROJECT_KIND` → `origin: "project"`; `HOUSESTYLE_KIND` →
-   `origin: "housestyle"`; anything else → `{ ok: false }`.
-3. Run `design` through `sanitizeDesign`, `bounds` through `sanitizeBounds`,
-   `imposition` through `sanitizeImposition` (each already merges forward
-   onto its default and clamps, so a missing or bad field is safe).
-4. For a project, read `source` defensively into a `SourceRef` (string
-   `name`, optional string `sha256`, numeric `byteLength`); tolerate a
-   missing source (leave `source` undefined). `version` is read but a
-   higher/lower value is accepted (forward-compatible; the sanitizers absorb
-   shape drift).
-5. Return `LoadedSettings`.
+The sweep renders each surface (with stub props/engine where needed),
+collects its visible `textContent` plus button/label/`aria-label`/
+placeholder/`title` attributes, and asserts none matches:
+- em-dash or en-dash: `/[—–]/`
+- banned vocabulary (case-insensitive): `seamless`, `effortless`, `unlock`,
+  `elevate`, `empower`, `leverage`, `robust`, `dive in`,
+  `in today's fast-paced world`, `we've got you covered` (and their kin),
+- negative empty-state phrasing: `/you don't have|no .* yet|nothing .* here|unable to|something went wrong/i`.
 
-**`ProjectControls.tsx`.** A visibly subordinate surface in the control
-column (below the dials, styled as ghost buttons inside a
-`<details><summary>Project and presets</summary>` disclosure so it never
-competes with the primary Export action). It renders four labeled buttons
-and two hidden native file inputs (same hidden-input-plus-button pattern as
-the EPUB import in `App.tsx`):
+Book/user data (titles, author names, the source filename, import-report
+detail strings echoing the file) is exempt — feed the surfaces neutral
+fixtures so the sweep tests product copy, not data. The `·` middle-dot
+separators in the byline and readout are allowed (not an em/en dash).
 
-- **Save project** → `onSaveProject()`.
-- **Open project** → clicks the project file input; on change reads the file
-  and calls `onOpenFile(text)`.
-- **Save house style** → `onSaveHouseStyle()`.
-- **Apply house style** → clicks the house-style file input; on change reads
-  the file and calls `onOpenFile(text)`.
+**Expected result:** a read of the current strings shows them already
+clean (the only `—`/`–` hits in the repo are inside test assertions and
+code comments). State this honestly: the deliverable is the comprehensive
+guard plus fixes for anything it catches, and the README sweep in §2.7.
 
-Both open inputs accept `.json,application/json`. A single polite live-region
-line shows the current notice (saved / loaded / mismatch / error). Props are
-plain callbacks plus the `notice` string, so the component is trivially
-testable with a fake.
+### 2.7 README finalization (audit criterion E)
+The README is already substantial and stranger-facing. This task verifies
+it end to end and fixes any drift; it is not a rewrite.
 
-**Studio wiring.**
-- New state: `notice: string` (default empty) shown via `ProjectControls`.
-- `onSaveProject()` builds `source` from `document.source`
-  (`{ name, sha256, byteLength }`) plus the current `design`, `bounds`,
-  `imposition`, calls `saveProject(...)`, sets notice "Saved your project."
-- `onSaveHouseStyle()` builds from `design`, `bounds`, `imposition`, calls
-  `saveHouseStyle(...)`, sets notice "Saved your house style."
-- `onOpenFile(text)` calls `readSettingsFile(text)`. On `{ ok: false }` set
-  the error notice. On success call `applySettings(loaded)`:
-  - `setDesign`, `saveDesign`; `setBounds`, `saveBounds`; `setImposition`,
-    `saveImposition` (persist so a later reload keeps them).
-  - `setBudgetBase(loaded.design)` and `clearSolveDisplay()` so future solves
-    anchor to the restored design and no stale solve readout lingers.
-  - Setting `design` drives the existing preview re-paginate; **no** extra
-    layout path is added.
-  - Notice: for a house style → "House style applied." For a project, compare
-    `loaded.source?.sha256` to `document.source?.sha256`: both present and
-    equal → "Project loaded."; both present and different → the mismatch
-    notice (§4); source absent on either side → "Project loaded." (unknown
-    match, applied).
-- `applySettings` never re-parses, never blanks the mounted book, and never
-  touches the export request.
+- **Understand.** The opening two-to-three sentences say plainly what the
+  app is and why. Confirm they match shipped behavior (import, live
+  re-flow, paper-budget slider, dual export, project/house-style files,
+  guided first run) and carry no pipeline jargon.
+- **Run — verified commands.** Verify every command against the real files:
+  - `npm install` / `npm run dev` (Vite, prints the local URL). The
+    `package.json` scripts (`dev`, `build`, `preview`, `lint`, `typecheck`,
+    `test`, `test:e2e`) exist and are correct.
+  - The Docker path is the **stranger** path: `docker build -t bindery-desk .`
+    then `docker run --rm -p 8080:80 bindery-desk`, verified against the
+    root `Dockerfile` (multi-stage Node build → nginx on port 80) and the
+    optional `SENTRY_DSN` / `UMAMI_URL` / `UMAMI_WEBSITE_ID` runtime env in
+    `docker/40-bindery-config.sh`.
+  - **Do not point a stranger at `docker-compose.staging.yml`.** That file
+    is factory-staging infra: it joins an external `factory-staging-net`
+    network and only `expose`s port 80 (no host publish), so
+    `docker compose -f docker-compose.staging.yml up` fails on a stranger's
+    machine and reaches no port. The README already, correctly, documents
+    the plain `docker build`/`docker run` path; keep it that way. This is
+    the honest reconciliation of QUALITY BAR §9's "verified against the
+    compose files": the compose file is verified to be infra-only and
+    therefore intentionally **not** in the stranger's run steps. Record
+    this decision in the run summary so a reviewer does not read the
+    omission as a miss.
+- **Contribute.** The "Where the code lives" map and the test commands
+  (`npm test`, `npm run lint`, `npm run typecheck`, `bash scripts/e2e.sh`,
+  and the `npx playwright install` fallback) are accurate. Verify the
+  `src/` tree map still matches the directories on disk (it lists
+  `model/`, `epub/`, `engine/`, `fonts/`, `ui/`, `ui/design/`,
+  `ui/budget/`, `ui/firstRun/`, `export/`, `project/`, `integrations/`,
+  `config/`, `sample/`) and fix any stale entry.
+- **Sweep.** Run the §2.6 sweep over the README prose too (no em/en dash,
+  no banned vocabulary, no negative phrasing).
 
-### 2.5 Saving and filenames (`projectIo.ts`, `download.ts`)
-- Extend `download.ts` with a generic `saveText(text, filename, mime)` that
-  wraps a `Blob`, creates an object URL, clicks a transient `<a download>`,
-  and revokes the URL (the same mechanism `saveBytes` already uses; factor
-  the shared Blob-download step so both call one helper, or add `saveText`
-  beside `saveBytes`). Export's `saveBytes` behavior and the two export
-  filenames are unchanged.
-- A filename helper produces `<slug>-project.json` and
-  `<slug>-housestyle.json`, reusing the existing title-slug logic (lowercase,
-  keep `[a-z0-9]`, single-hyphen runs, fall back to `book` when empty). No
-  spaces, no em dash, no en dash.
-- `projectIo.saveProject(project, title)` and
-  `saveHouseStyle(style, title)` serialize with `JSON.stringify(obj, null, 2)`
-  and call `saveText(json, filename, "application/json")`.
-- `projectIo.readFileText(file): Promise<string>` reads a `File` to text
-  (`file.text()`), used by `ProjectControls`.
+### 2.8 Designed states and the error-boundary safety net (criterion, designed states)
+Confirm each designed state in §2.2 reads in the product voice, holds its
+layout, and offers a next step: the empty dropzone, the loading skeleton
+(layout-stable, `aria-busy`), all three `ErrorState` kinds, and the
+preview's own `empty` ("This file has only front matter.") and `error`
+("Show the book again") panels. These already exist; the audit confirms
+them, it does not replace them.
 
-### 2.6 Guided first run (`firstRun/`, App + Studio wiring)
+Close the one gap: add an app-level React error boundary (e.g.
+`src/ui/ErrorBoundary.tsx`) wrapping `<App>` at the mount point in
+`src/main.tsx`. Its fallback:
+- renders a designed surface reusing the existing `surface` /
+  `surface__panel--error` styling and product voice, with a heading, a
+  short body, and a recovery action (e.g. a "Start over" button that
+  reloads to the empty state). No stack trace, no error code, no dead end.
+- forwards the error to Sentry if it is initialized (the app already wires
+  `@sentry/react` in `src/main.tsx`), and logs no book text or PII.
+- swept for banned copy like every other string (§2.6).
 
-**Persistence.** `persistFirstRun.ts` reads/writes a boolean under key
-`bindery.firstRun` (`{ v: 1, done: true }`), guarded so private-mode or
-disabled storage degrades to in-memory (the tour then shows this session and
-simply does not persist its dismissal). `isFirstRunDone()` returns false when
-nothing valid is stored; `markFirstRunDone()` writes it and never throws.
+This is a safety net, not a feature: on a healthy session it never renders,
+and no shipped flow changes. It is the smallest change that satisfies
+QUALITY BAR §3's "never a dead end" for an unexpected throw.
 
-**Steps (`steps.ts`).** Exactly three, each one short imperative sentence,
-each bound to a `data-tour` anchor:
-```
-1  anchor "sample"  "Open the sample to see a real book."
-2  anchor "slider"  "Drag the slider to pick your sheet count."
-3  anchor "export"  "Click Export to save your two PDFs."
-```
-
-**Controller (in `App.tsx`).**
-- On mount: `tour = isFirstRunDone() ? null : { step: 1 }`. If null the
-  overlay never mounts (returning user never sees it — the acceptance
-  criterion).
-- Step 1 → 2 advances automatically when the app state becomes `ready` (a
-  book loaded, by drop, file pick, or the sample). An effect on
-  `state.status` does this while `tour?.step === 1`.
-- Step 2 → 3 advances on the walkthrough's **Next** control (the drag is
-  encouraged, not forced; the anchored slider stays fully operable).
-- Step 3 ends the tour when the first export completes: `Studio` calls
-  `onExportDone` (fired once, when `exportState.kind` becomes `"done"`); App
-  then `markFirstRunDone()` and `setTour(null)`.
-- **Skip** on any step calls `markFirstRunDone()` and `setTour(null)`, so the
-  user is never nagged again.
-
-**`Walkthrough.tsx` (non-modal coach-mark).** Rendered at App level inside
-`.app` so it can point at the import surface first and the studio later. It
-takes `{ step, text, onNext, onSkip, showNext }`. It locates the current
-step's target with `document.querySelector('[data-tour="…"]')`, positions a
-small card near it via `getBoundingClientRect` (repositioned on window resize
-and scroll), and draws a light highlight ring on the target. It is **not**
-modal: no full-screen blocking backdrop, no focus trap; the anchored control
-stays clickable and keyboard-focusable so the user completes the real action.
-The card holds the step text, a **Skip** button always, and a **Next** button
-on step 2 only. The text is in a polite live region. If the target is not in
-the DOM yet (e.g. step 2 before the studio mounts), the card hides until it
-appears. On a viewport at or below ~430px the card docks to the bottom of the
-screen (a bar pointing at the control) rather than floating, so positioning
-math never pushes it off-screen. Positioning is best-effort and proven
-visually in e2e; presence, text, advancement, Skip, and the persisted flag
-are proven in unit tests.
-
-**Anchors.** `data-tour="sample"` on `ImportSurface`'s sample button;
-`data-tour="slider"` on `BudgetSlider`'s range input; `data-tour="export"`
-on `ControlPanel`'s Export button. These are inert attributes; they change no
-behavior and are safe if the tour never runs.
-
-### 2.7 Determinism, security, accessibility
-- **Determinism.** `sourceId`, `buildProject`, `buildHouseStyle`, and
-  `readSettingsFile` are pure over their inputs; no `Date.now`, no
-  `Math.random`. Identical state serializes to identical bytes; an opened
-  file always sanitizes to the same design.
-- **Security / no upload.** No server, no new outbound path. Opening reads a
-  local file the user selects; saving is a browser download. No project/preset
-  file or book byte is in any request. Every opened file is validated at the
-  boundary and clamped through the existing sanitizers. `JSON.parse` is
-  guarded; no `eval`, no dynamic code. Storage access (`bindery.firstRun` and
-  the persisted design/bounds/imposition on apply) is try/caught. No book
-  text or PII in any log, message, or error.
-- **Accessibility.** Project/preset actions are real labeled `<button>`s; the
-  hidden file inputs carry `aria-label`s; the notice is one polite live
-  region. The walkthrough is non-modal, keyboard-reachable, never traps
-  focus, and leaves the anchored control operable; Skip/Next are real buttons
-  with visible focus via the existing `:focus-visible` rule; the step text is
-  announced politely. All targets clear ~44px at 390px; no horizontal scroll.
+### 2.9 Determinism, security, privacy (unchanged, reconfirmed)
+This EPIC adds no network path, no storage key, no logging, and no
+outbound request. Reconfirm during the audit that saving/opening files and
+importing an EPUB still issue no network request (the existing offline /
+network-tab checks stay green), and that no book text or PII appears in any
+log or error string. No secrets enter tracked files; `.env.example` keeps
+placeholders only.
 
 ---
 
-## 3. Ordered task list (each maps to acceptance criteria)
+## 3. Ordered task list (each maps to a planner acceptance criterion)
 
-### T1 — Source identity and model (`sourceId.ts`, `document.ts`, import paths)
-Add `sourceId(bytes)` (SHA-256 hex via `crypto.subtle`); add optional
-`sha256` to `Document.source`; attach the hash at both import paths
-(`App.onFile`, `loadSample`) without making `parseEpub` async.
-**AC (Vitest):** `sourceId` returns a 64-char lowercase hex string; identical
-bytes hash equal, one flipped byte hashes different; the sample and a file
-import both produce a document whose `source.sha256` is set; a missing
-`crypto.subtle` leaves `sha256` undefined and does not throw; existing
-`parseEpub` tests pass unchanged.
+### T1 — Performance measurement and recording  →  criterion A
+Add `e2e/firstrender.spec.ts` (first meaningful render < 1s, via the
+empty-state heading and the FCP paint entry, both logged). Extend the
+audit to record a dial-change feedback check (< 100ms, no blank, `Reflowing`
+marker within 100ms). Keep and read out the existing Emma/Middlemarch and
+slider budgets from `pagination.spec.ts` / `budget.spec.ts`.
+**AC:** first-render measured < 1000ms and logged; slider first feedback
+≤ 100ms and settle ≤ 2000ms on the 300k file, logged; a dial change shows
+feedback ≤ 100ms with the book never blanked; all numbers copied into the
+run summary. No perf regression to any existing spec.
 
-### T2 — File model (`projectFile.ts`, `projectIo.ts`, `download.ts`)
-The project/house-style types; `buildProject`, `buildHouseStyle`;
-`readSettingsFile` reusing the three sanitizers; the JSON save helpers and the
-`-project.json` / `-housestyle.json` filename helper; `readFileText`.
-**AC (Vitest):** `buildProject` then `readSettingsFile(JSON.stringify(...))`
-round-trips design, bounds, and imposition to values deep-equal to the
-sanitized inputs, with `origin: "project"` and the source ref preserved;
-`buildHouseStyle` round-trips with `origin: "housestyle"` and no source;
-non-JSON text, an unknown `kind`, and an empty object each return
-`{ ok: false }`; an out-of-range design/bounds/imposition in the file is
-clamped to a layable value by the existing sanitizers; a project with a
-missing `source` still loads (source undefined); two `buildProject` calls on
-the same state serialize to identical strings; the filename helper lowercases,
-hyphenates, strips punctuation, and falls back to `book`; `saveText` builds an
-`application/json` blob and revokes its URL; export's `saveBytes` and the two
-export filenames are unchanged.
+### T2 — 390px pass over every surface  →  criterion B
+Add `e2e/mobile.spec.ts` covering the empty, loading, error, structure,
+control-panel, preview, project, and walkthrough surfaces at 390×780: no
+horizontal scroll on each, primary targets ≥ 44px, body font ≥ 16px. Fix
+any overflow with a CSS-only change in `styles.css`.
+**AC:** every surface in §2.2 passes the no-horizontal-scroll and target-size
+checks at 390px; existing 390px specs still pass; any fix is layout/CSS only
+and changes no behavior.
 
-### T3 — Project controls and Studio apply (`ProjectControls.tsx`, `Studio.tsx`)
-The subordinate disclosure with four buttons, two hidden inputs, and the
-notice line; Studio's `onSaveProject`, `onSaveHouseStyle`, `onOpenFile`,
-`applySettings`, and the mismatch/notice logic.
-**AC (Vitest + Testing Library, fakes for save/read):** the four buttons are
-present, labeled, and visibly subordinate to Export; Save project and Save
-house style call their save helper once with a correctly built file and set
-the saved notice; Open project reads a file and applies its settings; after
-apply, `design`, `bounds`, and `imposition` are updated and persisted (the
-three `save*` functions called) and the preview re-paginates (design changed);
-a project whose `source.sha256` differs from the loaded book shows the
-mismatch notice and still applies; a matching project shows "Project loaded.";
-applying a house style built from one document to a **different** document
-(two synthetic `Document`s) sets the design and re-paginates and shows "House
-style applied."; an unreadable/unknown file shows the plain error notice and
-changes no setting; a copy-sweep test over the component's strings finds no
-em/en dash, no banned vocabulary, and no negative empty-state phrasing;
-existing `Studio` and `App` suites pass.
+### T3 — Accessibility pass  →  criterion C
+Add `src/theme/contrast.test.ts` (dependency-free WCAG contrast over the
+light and dark tokens, all pairs in §2.5 pass). Add the labels/semantics
+jsdom assertions and the e2e keyboard walk (visible focus on every stop,
+Tab reaches every control). Fix any failing token, missing label, or
+unreachable control with the smallest change.
+**AC:** all contrast pairs pass in both themes; every input resolves by its
+label; one `<main>` and one `<h1>` per screen; `role="alert"` on errors and
+polite live regions on status/notice/readout/count; keyboard reaches every
+control with a visible ring; no meaningful image lacks alt (and the
+decorative mark stays `aria-hidden`). Findings and fixes recorded.
 
-### T4 — Guided first run (`firstRun/*`, `App.tsx`, anchors)
-`persistFirstRun`; `steps.ts`; the `Walkthrough` overlay; the App controller
-(mount gate, state-driven step 1→2, Next 2→3, export-done end, Skip); the
-`onExportDone` signal from Studio; the three `data-tour` anchors.
-**AC (Vitest + Testing Library):** with the flag unset, mounting App shows the
-step-1 text and a Skip control; moving to `ready` (open the sample) advances
-to the step-2 text; Next advances to step-3 text; signaling export done
-removes the overlay and calls `markFirstRunDone` (flag now set); remounting
-App with the flag set renders no walkthrough; Skip on any step sets the flag
-and removes the overlay; `isFirstRunDone`/`markFirstRunDone` round-trip and a
-storage error is swallowed; the `data-tour` anchors exist on the sample
-button, the slider input, and the Export button; a copy-sweep test over
-`steps.ts` and the overlay's own strings passes.
+### T4 — Comprehensive copy sweep  →  criterion D
+Add `src/copy.sweep.test.tsx` covering the currently-unswept surfaces
+(`ImportSurface`, `LoadingState`, `ErrorState` ×3, `StructureView`, `App`)
+with neutral, non-book fixtures. Fix any em/en dash, banned word, or
+negative empty-state string it catches.
+**AC:** the sweep renders each listed surface and asserts zero em/en dashes,
+zero banned vocabulary, and zero negative empty-state phrasing in product
+copy (book/user data excluded); the whole `npm test` suite stays green.
 
-### T5 — Styles and mobile (`styles.css`)
-Style the project/preset disclosure as subordinate ghost actions; style the
-coach-mark card, its highlight ring, and its bottom-docked mobile variant.
-**AC:** at 390px the project/preset controls and the walkthrough card are
-usable with ~44px targets and no horizontal scroll; the coach-mark does not
-cover the control it points at; focus states are visible. Verified in e2e
-(§T6) and by the 390px check.
+### T5 — README finalization  →  criterion E
+Verify every README command against `package.json`, the `Dockerfile`, and
+`docker/40-bindery-config.sh`; confirm the code map matches the `src/` tree;
+keep the stranger run path on `docker build`/`docker run` and record why the
+staging compose is intentionally omitted; sweep the prose.
+**AC:** a stranger can understand, run (commands verified to work), and
+contribute from the README alone; no factory/pipeline jargon; prose passes
+the copy sweep; the compose-omission decision is noted in the run summary.
 
-### T6 — e2e harness (`e2e/project.spec.ts`, Chromium, production build)
-- **Project round-trip:** open the sample, change a dial and drag the slider,
-  Save project (capture the download), reopen the sample, Open project
-  (`setInputFiles` the captured file), and assert the changed dial value and
-  the slider readout are restored.
-- **House style save/apply:** save a house style from the sample, then Apply
-  house style (the captured file) and assert the notice and that the preview
-  re-paginates without error. (The cross-*book* proof lives in the T3 unit
-  test with two documents, since only the sample EPUB is committed; note this
-  in the spec.)
-- **Mismatch notice:** open a project file whose source hash was altered (a
-  fixture built in-test from a saved project with a changed `sha256`) against
-  the sample and assert the mismatch notice appears and settings still apply.
-- **Walkthrough:** a fresh context (cleared storage) shows step 1; opening the
-  sample advances it; exporting removes it; a reload does not show it again;
-  in a second fresh context, Skip removes it and a reload keeps it hidden.
-- **390px:** project controls and the walkthrough usable at 390x780 with no
-  horizontal scroll.
-**AC:** all pass; `import.spec.ts`, `pagination.spec.ts`, `preview.spec.ts`,
-`typography.spec.ts`, `budget.spec.ts`, and `export.spec.ts` pass unchanged.
+### T6 — Designed states and error-boundary safety net  →  designed states (scope §1.6)
+Confirm the empty, loading, and all error surfaces (app and preview) read
+in voice, hold layout, and offer a next step. Add `src/ui/ErrorBoundary.tsx`
+wrapping `<App>` in `src/main.tsx`, with a designed product-voice fallback
+reusing the existing error styling and a recovery action, forwarding to
+Sentry when initialized. Add a jsdom test that throws inside a child and
+asserts the fallback renders (heading, body, recovery button, no stack
+trace) and that its copy passes the sweep.
+**AC:** every designed state confirmed; an unexpected throw shows the
+designed fallback rather than a blank/broken tree; the boundary never
+renders on a healthy session; no shipped flow changes; fallback copy swept.
 
-### T7 — README, copy sweep, recorded verification
-Update the README: the "Right now it..." paragraph gains save/open project,
-house-style presets, and the guided first run; the code map gains
-`src/project/` and `src/ui/firstRun/`; the e2e list gains the project spec.
-Mechanically sweep every user-visible string added in T1–T6 and this spec's
-§4.
-**AC:** README accurate against shipped behavior with verified commands; the
-sweep over all added strings and §4 finds no "—"/"–", no banned vocabulary,
-and no negative empty-state phrasing; a manual round-trip (save a project,
-reload, reopen) is recorded in `result.json`'s `summary`.
+### T7 — Consolidated verification and recording  →  DONE gate
+Run `npm run lint`, `npm run typecheck`, `npm test`, and the full Playwright
+suite (`bash scripts/e2e.sh`) to green. Assemble the recorded numbers
+(first render, Emma + Middlemarch feedback/settle/pageCount/wordCount,
+slider landing), the a11y findings, the sweep result, and the
+network-quiet reconfirmation into `result.json` `summary` (and an optional
+`report` artifact). Confirm a session that hits no fixed defect is
+behaviorally identical to the prior EPIC.
+**AC:** all four suites green; every criterion's number/result recorded; no
+behavioral change to any shipped flow; zero outstanding audit defects (or,
+if one cannot be fixed within scope, the run is `blocked`/a `requested_task`
+with the precise reason, never silently shipped).
 
 ---
 
-## 4. Copy (swept reference — ship these or better)
-All strings below are swept: no em/en dashes, no banned vocabulary, no
-negative empty-state phrasing.
+## 4. Copy (reference — the audit fixes toward these, already-shipped)
+No new strings are introduced. These are the current, already-swept surface
+strings the audit must keep clean; list them so the sweep's expectations are
+explicit.
 
-- Project disclosure summary: **Project and presets**
-- Buttons: **Save project**, **Open project**, **Save house style**,
-  **Apply house style**
-- Save notices: **Saved your project.** / **Saved your house style.**
-- Project loaded (source matches or unknown): **Project loaded.**
-- House style applied: **House style applied.**
-- Mismatched source: **Settings applied. This project came from a different
-  book.**
-- Unreadable / wrong file: **This file did not load. Choose a project or
-  house style saved here.**
-- Walkthrough steps:
-  1. **Open the sample to see a real book.**
-  2. **Drag the slider to pick your sheet count.**
-  3. **Click Export to save your two PDFs.**
-- Walkthrough controls: **Next**, **Skip**
-- Filenames: **aesops-fables-project.json**,
-  **aesops-fables-housestyle.json** (slug of the book title;
-  `book-project.json` when the title is empty)
+- Empty: **Open a book to begin** / **Drop an EPUB here or choose a file.
+  Your book stays on your computer.** / **Choose EPUB file** / **Open the
+  sample book**
+- Loading: **Reading your book**
+- Error (unreadable): **This file is not a readable EPUB.** / **Choose a
+  valid .epub and try again.**
+- Error (too-large): **This file is larger than the N MB limit.** / **Choose
+  a smaller EPUB.**
+- Error (sample-failed): **Try opening the sample again.** / **Check your
+  connection, then open the sample once more.**
+- Structure: **Open another book** / **Show what was set aside** / **Kept …**
+  / **Set aside …**
+- Preview states: **This file has only front matter.** / **Open another book
+  to see it laid out in facing pages.** / **Show the book again** / **The
+  layout stopped before it finished. Open the book again to try.**
+- Export: **Export saves a print-ready PDF.** / **Saved two files.** / **The
+  export stopped before it finished. Try again.**
+- Walkthrough: **Open the sample to see a real book.** / **Drag the slider to
+  pick your sheet count.** / **Click Export to save your two PDFs.** /
+  **Next** / **Skip**
 
-Book titles, author names, and the source filename written into a project
-file are book/user data and exempt from the vocabulary sweep; the product copy
-around them is not. Sweep before done: reject "—"/"–", the banned vocabulary
-list, and negative openers in every string added to `ProjectControls.tsx`,
-`Studio.tsx`, `firstRun/steps.ts`, `Walkthrough.tsx`, and the README.
+All read as a person wrote them: positive, one idea each, no em-dashes, no
+banned vocabulary. If the audit finds a drift from this list, fix it in the
+same run.
 
 ---
 
@@ -556,130 +465,113 @@ list, and negative openers in every string added to `ProjectControls.tsx`,
 ### 5.1 Unit / integration (Vitest + jsdom)
 | Criterion | Test |
 |---|---|
-| Source hash stable and discriminating | `sourceId.test.ts` |
-| Import paths attach `source.sha256` | `App.test.tsx` / `sourceId` integration |
-| Project round-trips design, bounds, imposition | `projectFile.test.ts` |
-| House style round-trips with no source | `projectFile.test.ts` |
-| Bad/partial file clamps or reports, never crashes | `projectFile.test.ts` (sanitizers + `{ ok: false }`) |
-| Deterministic serialize | `projectFile.test.ts` (two saves equal) |
-| Save/open UI builds and applies settings | `ProjectControls.test.tsx` + `Studio.test.tsx` |
-| Apply re-paginates and does not re-parse or blank | `Studio.test.tsx` |
-| Mismatched source detected and reported, still applies | `Studio.test.tsx` |
-| House style applies to a **different** book | `Studio.test.tsx` (two documents) |
-| Filename slug safe and swept | `projectIo`/`download.test.ts` |
-| First-run flag round-trips, guarded | `persistFirstRun.test.ts` |
-| Walkthrough shows, advances, ends, never returns | `Walkthrough.test.tsx` / `App.test.tsx` |
-| Skip dismisses permanently | `App.test.tsx` |
-| Copy swept | `ProjectControls.test.tsx`, `firstRun` copy test |
-| Existing suites intact | engine, export, preview, panel, Studio, App suites unchanged |
+| Theme contrast passes in light and dark | `src/theme/contrast.test.ts` (new) |
+| Every studio input resolves by its label | studio labels test (new, in `copy.sweep`/a11y test) |
+| One `<main>`/`<h1>`, alerts, polite live regions | a11y semantics test (new) |
+| Product copy clean on unswept surfaces | `src/copy.sweep.test.tsx` (new) |
+| Per-component copy still clean | existing sweeps unchanged |
+| Error boundary shows a designed fallback, not a crash | `src/ui/ErrorBoundary.test.tsx` (new) |
+| No behavioral change to shipped flows | existing engine/export/preview/panel/Studio/App suites unchanged |
 
-### 5.2 Browser harness (Playwright, Chromium) — `e2e/project.spec.ts`
+### 5.2 Browser harness (Playwright, Chromium, production build)
 | Criterion | Test |
 |---|---|
-| Project round-trips settings and paper budget | round-trip test |
-| Mismatched source reported plainly | mismatch test |
-| House style saved and applied, re-paginates | house-style test |
-| Walkthrough walks drop→export, then never returns | walkthrough test |
-| Skip dismisses and stays dismissed | walkthrough skip test |
-| Mobile 390px | project controls + walkthrough usable, no horizontal scroll |
-| Existing harnesses unaffected | the six existing specs pass unchanged |
+| First meaningful render < 1s | `e2e/firstrender.spec.ts` (new), logged |
+| Slider first feedback ≤ 100ms, settle ≤ 2s (300k) | `e2e/budget.spec.ts`, `e2e/pagination.spec.ts` (existing), logged |
+| Dial-change feedback ≤ 100ms, no blank | new assertion (in `mobile`/`firstrender` or a small perf spec) |
+| Every surface usable at 390px, no h-scroll | `e2e/mobile.spec.ts` (new) + existing budget/project 390px |
+| Visible focus and full keyboard reach | keyboard-walk test (new, in `mobile.spec.ts` or an a11y spec) |
+| No upload on import/save/open; works offline | existing import/export/project network checks unchanged |
+| Six existing e2e specs pass unchanged | `import`, `pagination`, `preview`, `typography`, `budget`, `export`, `project` |
 
 ### 5.3 Recorded verification (part of DONE)
-Record in `result.json` `summary`: a manual project round-trip (save a
-project from a book, reload, reopen it, settings and sheet count restored),
-confirmation that the walkthrough appears for a new visitor and never after
-the first export, and confirmation the network tab showed no upload when
-saving or opening a file.
+`result.json` `summary` records: the measured first-render ms; the
+Emma/Middlemarch `firstFeedbackMs`, `settleMs`, `pageCount`, `wordCount`;
+the slider landing within one sheet; the contrast pass in both themes; the
+"no horizontal scroll at 390px on N surfaces" result; the keyboard-reach
+result; the copy-sweep result; the README command verification; and the
+decision to omit the staging compose from the stranger run path.
 
 ---
 
 ## 6. Data model / migrations
-No database, no server. Storage stays forward-only:
-- `bindery.design`, `bindery.budget`, `bindery.print` — existing, reused; a
-  project/house-style apply writes through their existing `save*` functions.
-- `bindery.firstRun` (new, `{ v: 1, done: true }`) — the first-run flag;
-  readers return "not done" on any error and writers never throw. Holds no
-  book data.
-- `Document.source` gains optional `sha256` (in-memory only; not persisted to
-  storage). No other engine or model shape changes.
-- **Files (not storage):** the project file
-  `{ kind, version, source: {name, sha256, byteLength}, design, bounds,
-  imposition }` and the house-style file
-  `{ kind, version, design, bounds, imposition }` are downloads/uploads
-  under the user's control. A `version` mismatch is tolerated: the sanitizers
-  absorb shape drift, so an older or newer file still loads to a layable
-  design.
+None. No storage key, schema, model, worker protocol, or file format
+changes. `Document`, `DesignSpec`, `PaginationResult`, `ProjectFile`,
+`HouseStyle`, and every `bindery.*` storage key are untouched. This EPIC is
+forward-compatible by adding nothing.
 
 ---
 
-## 7. QUALITY BAR mapping (binding; budget from the start)
-- **§1 Perceived speed / differentiator:** the hash runs once at import off
-  the hot path; applying a project or house style uses the existing live
-  re-flow and never adds a second layout pass or blocks the studio; restore
-  is exact, so the trust the re-flow earns is preserved.
-- **§2 Mobile-first:** project controls and the walkthrough are usable at
-  390px with ~44px targets and no horizontal scroll; asserted in e2e.
-- **§3 Designed states:** save/open results speak in the product voice
-  through one polite notice line; a bad file gets a plain "what to do next"
-  message, never a stack trace; the walkthrough is a designed guided surface,
-  not a blank overlay.
-- **§4 First-run:** the guided walkthrough leads a brand-new user from opening
-  the sample to a first export in three anchored steps, skippable, shown only
-  until the first export, gone forever after (the persisted flag). This is the
-  clause this EPIC most directly delivers.
-- **§5 Security hygiene:** no server, no new outbound path, no book bytes or
-  files in any request; every opened file validated and clamped at the
-  boundary; storage guarded; no book text or PII in logs, messages, or errors.
-- **§6 Accessibility:** labeled buttons and inputs; one polite notice region;
-  the walkthrough is non-modal, keyboard-reachable, and never traps focus or
-  covers its target; visible focus everywhere.
-- **§7 Radically simple interface:** Export stays the single primary action;
-  project and preset actions hide behind one subordinate disclosure; the
-  walkthrough points one short step at a time and gets out of the way.
-- **§8 Copy sounds human:** §4 strings are swept; the sweep is a test and a T7
-  gate.
-- **§9 README:** updated truthfully for save/open, presets, and first run;
-  commands verified; no pipeline jargon.
+## 7. QUALITY BAR mapping (binding; this EPIC IS the bar audit)
+- **§1 Perceived speed / differentiator:** T1 measures and records first
+  render < 1s, interaction feedback < 100ms, and the 300k slider budget;
+  nothing here touches the hot path.
+- **§2 Mobile-first:** T2 proves 390px usability on every surface, not just
+  the two already covered.
+- **§3 Designed states:** the empty, loading, and all error states are
+  audited for voice, layout stability, and a next step; each already exists
+  and is confirmed, not replaced. The one gap (no app-level error boundary)
+  is closed with a designed fallback so an unexpected throw is never a blank
+  tree or a dead end (T6).
+- **§4 First-run:** the guided walkthrough already leads a new user drop →
+  export once and never returns; T2/T3 confirm it is reachable, non-modal,
+  keyboard-friendly, and mobile-docked. No change to its behavior.
+- **§5 Security hygiene:** no server, no new route, no outbound path;
+  §2.8 reconfirms input validation at the EPUB/file boundary, guarded
+  storage, and no PII in logs.
+- **§6 Accessibility:** T3 is this clause: contrast (both themes), visible
+  focus, labels, semantics/landmarks, keyboard reach, alt text.
+- **§7 Radically simple interface:** Export stays the one primary action;
+  the audit removes clutter only if it finds any, and adds none.
+- **§8 Copy sounds human:** T4 is the mechanical sweep, now comprehensive
+  and permanent, plus the README prose in T5.
+- **§9 README for strangers:** T5 finalizes and verifies it, with the
+  honest staging-compose reconciliation.
 
-Reconciliation: the project/house-style files, the source hash, the guided
-run, and their tests are the scoped work, and meeting the bar on them is in
-scope. Preset sharing, cloud sync, and version history stay out however
-tempting; if meeting the bar ever appeared to require one of them, that is a
-`blocked`, not a quiet expansion.
+Reconciliation: meeting the bar on the existing surfaces is the entire
+scope, so none of it is drift. Exceeding it (new controls, motion,
+theming, a design system, engine micro-optimization) is drift and a defect.
+If a bar clause ever appeared to need a Non-Goal to satisfy, that is
+`blocked` with a precise question, never a quiet expansion.
 
 ---
 
 ## 8. Definition of done
-- All seven tasks' ACs met; `lint`, `typecheck`, `test`, and all seven
-  Playwright specs green (`project.spec.ts` new; the other six unchanged).
-- A project file round-trips: reopening the same book restores the exact
-  design, bounds, and print setup, and the preview re-paginates to the same
-  page and sheet count.
-- A project opened against a different book reports the mismatch plainly and
-  still applies its settings.
-- A house style saved from one book applies cleanly to a different book and
-  re-paginates (proven across two documents).
-- The walkthrough is three one-sentence imperative steps anchored to real
-  controls, skippable at any step, shown only until the first export, and
-  never shown to a returning user with the persisted flag.
-- Every user-visible string added is swept: no em/en dashes, no banned
-  vocabulary, no negative empty-state phrasing.
-- A session that never saves, opens, or runs the tour is behaviorally
-  identical to the prior EPIC: default path, budgets, determinism, export,
-  and golden page counts unchanged.
+- `npm run lint`, `npm run typecheck`, `npm test`, and the full Playwright
+  suite are green; the six prior e2e specs pass unchanged and the new
+  `firstrender` / `mobile` (+ a11y) specs pass.
+- First meaningful render is measured under ~1s; interaction feedback under
+  100ms; the slider re-flow meets the ≤100ms / ≤~2s budget on the 300k-word
+  file. All numbers are recorded in `result.json`.
+- Every surface in §2.2 passes the 390px check: all features reachable, no
+  horizontal scroll, ~44px targets, readable text.
+- Accessibility: all contrast pairs pass in light and dark, focus is visible
+  on every interactive element, every input is labeled, headings and
+  landmarks are semantic, the keyboard reaches everything, and every
+  meaningful image has alt (the app renders none in its chrome; the one
+  decorative glyph is `aria-hidden`).
+- The comprehensive copy sweep finds zero em/en dashes, zero banned
+  vocabulary, and zero negative empty-state phrasing across all surfaces and
+  the README.
+- The empty, loading, and error states are confirmed in voice and layout
+  everywhere, and an app-level error boundary shows a designed, product-voice
+  fallback with a recovery action instead of a blank tree on an unexpected
+  throw.
+- The README lets a stranger understand, run (verified commands), and
+  contribute, with no pipeline jargon, and the staging-compose omission is
+  explained.
+- A session that hits no fixed defect is behaviorally identical to the prior
+  EPIC: default path, budgets, determinism, export, project round-trips, the
+  walkthrough, and golden page counts unchanged.
 
-### Planner AC -> coverage
-1. *A project file round-trips: reopening restores the exact settings and
-   paper budget; a mismatched source is detected and reported plainly.* ->
-   §2.3 hash, §2.4 build/parse/apply; T1, T2, T3; §5.1 round-trip + mismatch
-   rows; §5.2 round-trip + mismatch tests; §5.3.
-2. *A house style saved from one book applies cleanly to a different book and
-   re-paginates.* -> §2.4 house-style file + `applySettings`; T2, T3
-   two-document test; §5.1 different-book row; §5.2 house-style test.
-3. *The walkthrough is 2 to 4 one-sentence imperative steps anchored to real
-   controls, skippable at any step, and shown only until first export; a
-   returning user with the persisted flag never sees it.* -> §2.6 controller,
-   steps, anchors, persistence; T4; §5.1 walkthrough + skip rows; §5.2
-   walkthrough tests.
-4. *Example step copy is plain and positive, swept for banned tells and
-   em-dashes.* -> §4 swept copy; T3/T4 copy-sweep tests; T7 final sweep.
+### Planner AC → coverage
+1. *Measured: first meaningful render under ~1s; interaction feedback under
+   100ms; slider re-flow meets the EPIC 2/5 budget on the 300k file. Numbers
+   recorded.* → §2.3; T1, T6; §5.2 first-render + budget rows; §5.3.
+2. *Every screen passes the 390px check.* → §2.4; T2; §5.2 mobile row.
+3. *Accessibility: contrast, focus, labels, semantics, keyboard, alt text.*
+   → §2.5; T3; §5.1 contrast/labels/semantics rows, §5.2 keyboard-walk row.
+4. *Copy sweep: zero em-dashes, banned vocabulary, negative empty-state
+   phrasing.* → §2.6; T4; §5.1 sweep row.
+5. *README lets a stranger understand, run (verified), and contribute, no
+   pipeline jargon.* → §2.7; T5.
