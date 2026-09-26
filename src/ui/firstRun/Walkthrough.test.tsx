@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Walkthrough } from "./Walkthrough";
 import { TOUR_STEPS } from "./steps";
@@ -39,6 +39,20 @@ describe("Walkthrough", () => {
   it("hides until its target is in the DOM", () => {
     render(<Walkthrough step={1} onNext={() => {}} onSkip={() => {}} />);
     expect(screen.queryByText("Open the sample to see a real book.")).not.toBeInTheDocument();
+  });
+
+  it("tears down when its target leaves the DOM", async () => {
+    const { container } = withTarget("slider", 2);
+    expect(screen.getByText("Drag the slider to pick your sheet count.")).toBeInTheDocument();
+
+    // Remove the anchored control, as the studio unmounting would.
+    container.querySelector('[data-tour="slider"]')?.remove();
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Drag the slider to pick your sheet count."),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("has swept, human copy in its steps and controls", () => {

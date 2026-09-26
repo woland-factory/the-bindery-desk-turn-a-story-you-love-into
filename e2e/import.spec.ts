@@ -47,3 +47,33 @@ test("usable at a 390px viewport with no horizontal scroll", async ({ page }) =>
   );
   expect(overflow).toBe(false);
 });
+
+test("the first-run coach mark does not strand on the error screen", async ({ page }) => {
+  await page.goto("/");
+
+  // A brand-new visitor starts on step 1 of the guided run.
+  await expect(page.getByText("Open the sample to see a real book.")).toBeVisible();
+
+  // Opening the sample advances the coach mark to the slider step.
+  await page.getByRole("button", { name: "Open the sample book" }).click();
+  await expect(page.getByText("Drag the slider to pick your sheet count.")).toBeVisible();
+
+  // Then a file that fails to parse unloads the book to the error state.
+  // The studio mounts several file inputs, so target the EPUB one by label.
+  await page.locator('input[aria-label="Upload EPUB file"]').setInputFiles({
+    name: "broken.epub",
+    mimeType: "application/epub+zip",
+    buffer: Buffer.from("this is not a zip, so the parse fails"),
+  });
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("This file is not a readable EPUB.");
+
+  // The coach mark tears down: no stale ring, no card over the error panel.
+  await expect(page.getByText("Drag the slider to pick your sheet count.")).toHaveCount(0);
+  await expect(page.locator(".walkthrough")).toHaveCount(0);
+
+  // The recovery button is reachable, not covered by a floating card. A click
+  // that lands (Playwright fails if the target is obscured) proves it.
+  await alert.getByRole("button", { name: "Try another file" }).click();
+});

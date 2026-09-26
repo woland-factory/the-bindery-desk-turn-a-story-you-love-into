@@ -192,6 +192,29 @@ describe("App: guided first run", () => {
     expect(JSON.parse(localStorage.getItem("bindery.firstRun")!)).toEqual({ v: 1, done: true });
   });
 
+  it("tears down the coach-mark when a bad file unloads the book", async () => {
+    const engine = fakeEngine();
+    render(<App createEngine={engine.create} />);
+
+    // Reach step 2 (the slider): open the sample, then advance.
+    await openSample();
+    expect(
+      await screen.findByText("Drag the slider to pick your sheet count."),
+    ).toBeInTheDocument();
+
+    // Now choose a file that fails to parse. The studio (and its slider) leaves.
+    await userEvent.upload(fileInput(), epubFile(makeNotAZip(), "broken.epub"));
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByText("This file is not a readable EPUB.")).toBeInTheDocument();
+
+    // The coach-mark does not strand over the error panel: the slider step is
+    // gone and the recovery action is reachable.
+    expect(
+      screen.queryByText("Drag the slider to pick your sheet count."),
+    ).not.toBeInTheDocument();
+    expect(within(alert).getByRole("button", { name: "Try another file" })).toBeInTheDocument();
+  });
+
   it("never shows the walkthrough to a returning visitor", () => {
     markFirstRunDone();
     render(<App />);

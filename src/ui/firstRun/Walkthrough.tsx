@@ -20,31 +20,37 @@ interface Props {
 const DOCK_MAX_WIDTH = 430;
 const CARD_GAP = 10;
 
+/** True when two measurements describe the same box (or both are absent). */
+function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.top === b.top && a.left === b.left && a.width === b.width && a.height === b.height;
+}
+
 export function Walkthrough({ step, onNext, onSkip }: Props) {
   const current = TOUR_STEPS[step - 1];
   const [rect, setRect] = useState<DOMRect | null>(null);
 
   useEffect(() => {
-    if (!current) return;
-    let raf = 0;
+    if (!current || typeof document === "undefined") return;
     const measure = () => {
-      const el =
-        typeof document !== "undefined"
-          ? document.querySelector(`[data-tour="${current.anchor}"]`)
-          : null;
-      if (el) {
-        setRect(el.getBoundingClientRect());
-      } else {
-        // Target not mounted yet: hide and retry on the next frame.
-        setRect(null);
-        raf = requestAnimationFrame(measure);
-      }
+      const el = document.querySelector(`[data-tour="${current.anchor}"]`);
+      const next = el ? el.getBoundingClientRect() : null;
+      // Clear the ring the instant the target leaves the DOM so the coach-mark
+      // never floats over a control that is gone (e.g. the book unloads to an
+      // error). It re-anchors on its own when the control comes back. Skip the
+      // state update when nothing moved so a live re-flow stays off this path.
+      setRect((prev) => (sameRect(prev, next) ? prev : next));
     };
     measure();
+    // A MutationObserver catches the target appearing or leaving; resize and
+    // scroll catch it moving. Step change re-runs the whole effect.
+    const observer = new MutationObserver(measure);
+    observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener("resize", measure);
     window.addEventListener("scroll", measure, true);
     return () => {
-      if (raf) cancelAnimationFrame(raf);
+      observer.disconnect();
       window.removeEventListener("resize", measure);
       window.removeEventListener("scroll", measure, true);
     };

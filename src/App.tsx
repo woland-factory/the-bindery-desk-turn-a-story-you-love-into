@@ -89,6 +89,14 @@ export default function App({ createEngine, createExport }: Props = {}) {
     if (tour?.step === 1 && state.status === "ready") setTour({ step: 2 });
   }, [tour, state.status]);
 
+  // Steps 2 and 3 point at studio controls. When the book unloads (error,
+  // loading, or empty) those controls leave the DOM, so roll the tour back to
+  // step 1. The coach-mark re-anchors to the current screen instead of ringing
+  // a control that is gone. It re-advances to step 2 when a book loads again.
+  useEffect(() => {
+    if (state.status !== "ready" && tour && tour.step > 1) setTour({ step: 1 });
+  }, [state.status, tour]);
+
   const endTour = useCallback(() => {
     markFirstRunDone();
     setTour(null);
